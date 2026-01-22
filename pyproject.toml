@@ -6,6 +6,9 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
+    "torch",
+    "torchvision",
+    "torchaudio",
     "torchao==0.10.0",
     "safetensors",
     "diffusers",
