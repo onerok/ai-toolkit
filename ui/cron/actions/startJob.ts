@@ -53,8 +53,12 @@ const startAndWatchJob = (job: Job) => {
     fs.writeFileSync(configPath, JSON.stringify(jobConfig, null, 2));
 
     let pythonPath = 'python';
-    // use .venv or venv if it exists
-    if (fs.existsSync(path.join(TOOLKIT_ROOT, '.venv'))) {
+    let useUv = false;
+    // prefer uv if pyproject.toml exists (uv-managed project)
+    if (fs.existsSync(path.join(TOOLKIT_ROOT, 'pyproject.toml'))) {
+      pythonPath = 'uv';
+      useUv = true;
+    } else if (fs.existsSync(path.join(TOOLKIT_ROOT, '.venv'))) {
       if (isWindows) {
         pythonPath = path.join(TOOLKIT_ROOT, '.venv', 'Scripts', 'python.exe');
       } else {
@@ -95,7 +99,9 @@ const startAndWatchJob = (job: Job) => {
     }
 
     // Add the --log argument to the command
-    const args = [runFilePath, configPath, '--log', logPath];
+    const args = useUv
+      ? ['run', 'python', runFilePath, configPath, '--log', logPath]
+      : [runFilePath, configPath, '--log', logPath];
 
     try {
       let subprocess;

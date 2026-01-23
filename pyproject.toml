@@ -49,7 +49,7 @@ dependencies = [
     "setuptools==69.5.1",
     "scipy==1.12.0",
     "av==16.0.1",
-    "torchcodec",
+    "torchcodec; platform_machine != 'aarch64' or sys_platform != 'linux'",
 ]
 
 # DGX-specific dependencies are documented in dgx_requirements.txt
@@ -63,24 +63,33 @@ dev = [
 ]
 
 [tool.uv]
-# Default to CUDA 12.8 on Linux (required for RTX 50-series / Blackwell)
-# Change the index below based on your CUDA version:
-# - pytorch-cu128: CUDA 12.8 (RTX 50-series, sm_120)
+# PyTorch CUDA index selection:
+# - pytorch-cu130: CUDA 13.0 (DGX Spark / GB10 aarch64, sm_121)
+# - pytorch-cu128: CUDA 12.8 (RTX 50-series x86_64, sm_120)
 # - pytorch-cu126: CUDA 12.6 (RTX 40-series and older)
 # - pytorch-cu124: CUDA 12.4
 # - pytorch-cpu: CPU only
+# Currently: cu130 for aarch64 Linux, cu128 for x86_64 Linux
 
 [tool.uv.sources]
 diffusers = { git = "https://github.com/huggingface/diffusers", rev = "8600b4c10d67b0ce200f664204358747bd53c775" }
 torch = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
 torchvision = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
 torchaudio = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
