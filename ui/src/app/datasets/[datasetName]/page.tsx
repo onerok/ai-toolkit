@@ -9,12 +9,23 @@ import AddImagesModal, { openImagesModal } from '@/components/AddImagesModal';
 import { TopBar, MainContent } from '@/components/layout';
 import { apiClient } from '@/utils/api';
 import FullscreenDropOverlay from '@/components/FullscreenDropOverlay';
+import SortDropdown, { SortMode } from '@/components/SortDropdown';
+import { sortByPHashSimilarity } from '@/utils/phash';
+
+interface ImageEntry {
+  img_path: string;
+  mtime: number;
+  phash?: string;
+}
 
 export default function DatasetPage({ params }: { params: { datasetName: string } }) {
-  const [imgList, setImgList] = useState<{ img_path: string }[]>([]);
+  const [imgList, setImgList] = useState<ImageEntry[]>([]);
   const usableParams = use(params as any) as { datasetName: string };
   const datasetName = usableParams.datasetName;
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [sortMode, setSortMode] = useState<SortMode>('filename');
+  const [hashMap, setHashMap] = useState<Record<string, string>>({});
+  const [hashLoading, setHashLoading] = useState(false);
 
   const refreshImageList = (dbName: string) => {
     setStatus('loading');
@@ -24,8 +35,6 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
       .then((res: any) => {
         const data = res.data;
         console.log('Images:', data.images);
-        // sort
-        data.images.sort((a: { img_path: string }, b: { img_path: string }) => a.img_path.localeCompare(b.img_path));
         setImgList(data.images);
         setStatus('success');
       })
@@ -34,11 +43,51 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
         setStatus('error');
       });
   };
+
   useEffect(() => {
     if (datasetName) {
       refreshImageList(datasetName);
     }
   }, [datasetName]);
+
+  // Fetch hashes when similarity mode is selected
+  useEffect(() => {
+    if (sortMode === 'similarity' && Object.keys(hashMap).length === 0) {
+      setHashLoading(true);
+      apiClient
+        .post('/api/datasets/computeHashes', { datasetName })
+        .then((res: any) => {
+          setHashMap(res.data.hashes || {});
+        })
+        .catch(error => {
+          console.error('Error computing hashes:', error);
+        })
+        .finally(() => {
+          setHashLoading(false);
+        });
+    }
+  }, [sortMode, datasetName]);
+
+  const sortedImgList = useMemo(() => {
+    const list: ImageEntry[] = imgList.map(img => ({
+      ...img,
+      phash: hashMap[img.img_path],
+    }));
+
+    switch (sortMode) {
+      case 'filename':
+        return [...list].sort((a, b) => a.img_path.localeCompare(b.img_path));
+      case 'date':
+        return [...list].sort((a, b) => b.mtime - a.mtime);
+      case 'similarity':
+        if (hashLoading || Object.keys(hashMap).length === 0) {
+          return [...list].sort((a, b) => a.img_path.localeCompare(b.img_path));
+        }
+        return sortByPHashSimilarity(list);
+      default:
+        return list;
+    }
+  }, [imgList, sortMode, hashMap, hashLoading]);
 
   const PageInfoContent = useMemo(() => {
     let icon = null;
@@ -103,6 +152,7 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
           <h1 className="text-lg">Dataset: {datasetName}</h1>
         </div>
         <div className="flex-1"></div>
+        <SortDropdown value={sortMode} onChange={setSortMode} loading={hashLoading} />
         <div>
           <Button
             className="text-gray-200 bg-slate-600 px-3 py-1 rounded-md"
@@ -114,9 +164,9 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
       </TopBar>
       <MainContent>
         {PageInfoContent}
-        {status === 'success' && imgList.length > 0 && (
+        {status === 'success' && sortedImgList.length > 0 && (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {imgList.map(img => (
+            {sortedImgList.map(img => (
               <DatasetImageCard
                 key={img.img_path}
                 alt="image"
