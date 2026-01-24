@@ -12,6 +12,7 @@ from .tools.dataset_tools_config_modules import RAW_DIR, TRAIN_DIR, Step, ImgInf
 from .tools.fuyu_utils import FuyuImageProcessor
 from .tools.image_tools import load_image, ImageProcessor, resize_to_max
 from .tools.llava_utils import LLaVAImageProcessor
+from .tools.qwen_vl_utils import QwenVLImageProcessor
 from .tools.caption import default_long_prompt, default_short_prompt, default_replacements
 from jobs.process import BaseExtensionProcess
 from .tools.sync_tools import get_img_paths
@@ -65,6 +66,8 @@ class SuperTagger(BaseExtensionProcess):
             return LLaVAImageProcessor(device=self.device)
         elif self.caption_method.startswith('fuyu'):
             return FuyuImageProcessor(device=self.device)
+        elif self.caption_method.startswith('qwen_vl'):
+            return QwenVLImageProcessor(device=self.device)
         else:
             raise ValueError(f"Unknown caption method: {self.caption_method}")
 
@@ -158,6 +161,11 @@ class SuperTagger(BaseExtensionProcess):
         if img_info.is_dirty:
             with open(json_path, 'w') as f:
                 json.dump(img_info.to_dict(), f, indent=4)
+            # also write a .txt caption file for UI compatibility
+            if img_info.caption:
+                txt_path = os.path.join(train_dir, f"{filename_no_ext}.txt")
+                with open(txt_path, 'w') as f:
+                    f.write(img_info.caption)
 
         if self.dataset_master_config_file:
             # add to master dict

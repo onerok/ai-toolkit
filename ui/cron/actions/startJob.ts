@@ -56,7 +56,15 @@ const startAndWatchJob = (job: Job) => {
     let useUv = false;
     // prefer uv if pyproject.toml exists (uv-managed project)
     if (fs.existsSync(path.join(TOOLKIT_ROOT, 'pyproject.toml'))) {
-      pythonPath = 'uv';
+      // resolve full path to uv since Node.js may not have ~/.local/bin in PATH
+      const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+      const uvCandidates = [
+        path.join(homeDir, '.local', 'bin', 'uv'),
+        path.join(homeDir, '.cargo', 'bin', 'uv'),
+        '/usr/local/bin/uv',
+        'uv',
+      ];
+      pythonPath = uvCandidates.find(p => p === 'uv' || fs.existsSync(p)) || 'uv';
       useUv = true;
     } else if (fs.existsSync(path.join(TOOLKIT_ROOT, '.venv'))) {
       if (isWindows) {
@@ -105,9 +113,9 @@ const startAndWatchJob = (job: Job) => {
 
     try {
       let subprocess;
+      const logFd = fs.openSync(logPath, 'a');
 
       if (isWindows) {
-        // Spawn Python directly on Windows so the process can survive parent exit
         subprocess = spawn(pythonPath, args, {
           env: {
             ...process.env,
@@ -116,13 +124,12 @@ const startAndWatchJob = (job: Job) => {
           cwd: TOOLKIT_ROOT,
           detached: true,
           windowsHide: true,
-          stdio: 'ignore', // don't tie stdio to parent
+          stdio: ['ignore', logFd, logFd],
         });
       } else {
-        // For non-Windows platforms, fully detach and ignore stdio so it survives daemon-like
         subprocess = spawn(pythonPath, args, {
           detached: true,
-          stdio: 'ignore',
+          stdio: ['ignore', logFd, logFd],
           env: {
             ...process.env,
             ...additionalEnv,
@@ -131,20 +138,34 @@ const startAndWatchJob = (job: Job) => {
         });
       }
 
+      // Listen for process exit to update job status on failure
+      subprocess.on('close', async (code) => {
+        fs.closeSync(logFd);
+        if (code !== 0 && code !== null) {
+          const logContent = fs.existsSync(logPath)
+            ? fs.readFileSync(logPath, 'utf-8').slice(-500)
+            : 'No log output';
+          await prisma.job.update({
+            where: { id: jobID },
+            data: {
+              status: 'error',
+              info: `Process exited with code ${code}: ${logContent}`,
+            },
+          });
+        }
+      });
+
       // Important: let the child run independently of this Node process.
       if (subprocess.unref) {
         subprocess.unref();
       }
 
-      // Optionally write a pid file for future management (stop/inspect) without keeping streams open
+      // Write a pid file for future management (stop/inspect)
       try {
         fs.writeFileSync(path.join(trainingFolder, 'pid.txt'), String(subprocess.pid ?? ''), { flag: 'w' });
       } catch (e) {
         console.error('Error writing pid file:', e);
       }
-
-      // (No stdout/stderr listeners — logging should go to --log handled by your Python)
-      // (No monitoring loop — the whole point is to let it live past this worker)
     } catch (error: any) {
       // Handle any exceptions during process launch
       console.error('Error launching process:', error);
