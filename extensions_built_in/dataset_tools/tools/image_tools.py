@@ -13,8 +13,9 @@ img_ext = ['.jpg', '.jpeg', '.png', '.webp']
 if TYPE_CHECKING:
     from .llava_utils import LLaVAImageProcessor
     from .fuyu_utils import FuyuImageProcessor
+    from .qwen_vl_utils import QwenVLImageProcessor
 
-ImageProcessor = Union['LLaVAImageProcessor', 'FuyuImageProcessor']
+ImageProcessor = Union['LLaVAImageProcessor', 'FuyuImageProcessor', 'QwenVLImageProcessor']
 
 
 def pil_to_cv2(image):
