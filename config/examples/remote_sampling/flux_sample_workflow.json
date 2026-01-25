@@ -1,0 +1,87 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {"title": "Load Checkpoint"},
+    "inputs": {
+      "ckpt_name": "flux1-dev.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "AITKLoraDownloader",
+    "_meta": {"title": "Download LoRA from AI Toolkit"},
+    "inputs": {
+      "url": "{{lora_url}}",
+      "filename": "{{lora_filename}}",
+      "overwrite": true,
+      "timeout": 60
+    }
+  },
+  "3": {
+    "class_type": "LoraLoader",
+    "_meta": {"title": "Load LoRA"},
+    "inputs": {
+      "lora_name": ["2", 0],
+      "strength_model": "{{network_multiplier}}",
+      "strength_clip": "{{network_multiplier}}",
+      "model": ["1", 0],
+      "clip": ["1", 1]
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "CLIP Text Encode (Prompt)"},
+    "inputs": {
+      "text": "{{prompt}}",
+      "clip": ["3", 1]
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "CLIP Text Encode (Negative)"},
+    "inputs": {
+      "text": "{{negative_prompt}}",
+      "clip": ["3", 1]
+    }
+  },
+  "6": {
+    "class_type": "EmptyLatentImage",
+    "_meta": {"title": "Empty Latent Image"},
+    "inputs": {
+      "width": "{{width}}",
+      "height": "{{height}}",
+      "batch_size": 1
+    }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "_meta": {"title": "KSampler"},
+    "inputs": {
+      "seed": "{{seed}}",
+      "steps": "{{steps}}",
+      "cfg": "{{guidance_scale}}",
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1.0,
+      "model": ["3", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 0]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "_meta": {"title": "VAE Decode"},
+    "inputs": {
+      "samples": ["7", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "_meta": {"title": "Save Image"},
+    "inputs": {
+      "filename_prefix": "aitk_sample",
+      "images": ["8", 0]
+    }
+  }
+}

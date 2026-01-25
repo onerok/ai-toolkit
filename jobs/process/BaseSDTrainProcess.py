@@ -72,6 +72,8 @@ import hashlib
 
 from toolkit.util.blended_blur_noise import get_blended_blur_noise
 from toolkit.util.get_model import get_model_class
+from toolkit.remote_sampling import RemoteSamplingMode, RemoteSamplingManager
+from toolkit.lora_server import LoraServer
 
 def flush():
     torch.cuda.empty_cache()
@@ -252,7 +254,19 @@ class BaseSDTrainProcess(BaseTrainProcess):
         self.ema: ExponentialMovingAverage = None
         
         validate_configs(self.train_config, self.model_config, self.save_config, self.dataset_configs)
-        
+
+        # Remote sampling setup
+        self.remote_sampler: Optional[RemoteSamplingManager] = None
+        self.lora_server: Optional[LoraServer] = None
+        self._pending_remote_samples: List = []
+        self._remote_sampling_enabled = False
+
+        if hasattr(self.sample_config, 'remote_sampling') and self.sample_config.remote_sampling.enabled:
+            rs_config = self.sample_config.remote_sampling
+            if rs_config.mode != RemoteSamplingMode.LOCAL and len(rs_config.endpoints) > 0:
+                self._remote_sampling_enabled = True
+                print_acc(f"Remote sampling enabled: mode={rs_config.mode.value}, endpoints={len(rs_config.endpoints)}")
+
         do_profiler = self.get_conf('torch_profiler', False)
         self.torch_profiler = None if not do_profiler else torch.profiler.profile(
             activities=[
@@ -269,10 +283,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # override in subclass
         return generate_image_config_list
 
-    def sample(self, step=None, is_first=False):
-        if not self.accelerator.is_main_process:
-            return
-        flush()
+    def _build_sample_configs(self, step=None, is_first=False) -> List[GenerateImageConfig]:
+        """Build the list of GenerateImageConfig objects for sampling."""
         sample_folder = os.path.join(self.save_root, 'samples')
         gen_img_config_list = []
 
@@ -283,7 +295,6 @@ class BaseSDTrainProcess(BaseTrainProcess):
         test_image_paths = []
         if self.adapter_config is not None and self.adapter_config.test_img_path is not None:
             test_image_path_list = self.adapter_config.test_img_path
-            # divide up images so they are evenly distributed across prompts
             for i in range(len(sample_config.prompts)):
                 test_image_paths.append(test_image_path_list[i % len(test_image_path_list)])
 
@@ -293,18 +304,13 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
             step_num = ''
             if step is not None:
-                # zero-pad 9 digits
                 step_num = f"_{str(step).zfill(9)}"
 
             filename = f"[time]_{step_num}_[count].{self.sample_config.ext}"
-
             output_path = os.path.join(sample_folder, filename)
 
             prompt = sample_config.prompts[i]
 
-            # add embedding if there is one
-            # note: diffusers will automatically expand the trigger to the number of added tokens
-            # ie test123 will become test123 test123_1 test123_2 etc. Do not add this yourself here
             if self.embedding is not None:
                 prompt = self.embedding.inject_embedding_to_prompt(
                     prompt, expand_token=True, add_if_not_present=False
@@ -321,13 +327,13 @@ class BaseSDTrainProcess(BaseTrainProcess):
             extra_args = {}
             if self.adapter_config is not None and self.adapter_config.test_img_path is not None:
                 extra_args['adapter_image_path'] = test_image_paths[i]
-            
+
             sample_item = sample_config.samples[i]
             if sample_item.seed is not None:
                 current_seed = sample_item.seed
 
             gen_img_config_list.append(GenerateImageConfig(
-                prompt=prompt,  # it will autoparse the prompt
+                prompt=prompt,
                 width=sample_item.width,
                 height=sample_item.height,
                 negative_prompt=sample_item.neg,
@@ -353,26 +359,205 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 **extra_args
             ))
 
-        # post process
-        gen_img_config_list = self.post_process_generate_image_config_list(gen_img_config_list)
+        return self.post_process_generate_image_config_list(gen_img_config_list)
 
-        # if we have an ema, set it to validation mode
+    def _sample_local(self, step=None, is_first=False):
+        """Generate samples locally on the training GPU (original behavior)."""
+        gen_img_config_list = self._build_sample_configs(step, is_first)
+        sample_config = self.first_sample_config if is_first else self.sample_config
+
         if self.ema is not None:
             self.ema.eval()
 
-        # let adapter know we are sampling
         if self.adapter is not None and isinstance(self.adapter, CustomAdapter):
             self.adapter.is_sampling = True
-        
-        # send to be generated
+
         self.sd.generate_images(gen_img_config_list, sampler=sample_config.sampler)
 
-        
         if self.adapter is not None and isinstance(self.adapter, CustomAdapter):
             self.adapter.is_sampling = False
 
         if self.ema is not None:
             self.ema.train()
+
+    def _sample_remote(self, step=None, is_first=False) -> bool:
+        """
+        Attempt to generate samples via remote ComfyUI.
+
+        Returns:
+            True if remote sampling was successful/started, False otherwise
+        """
+        if self.remote_sampler is None or self.network is None:
+            return False
+
+        rs_config = self.sample_config.remote_sampling
+        mode = rs_config.mode
+
+        try:
+            # Get an available ComfyUI client
+            client = self.remote_sampler.get_available_client()
+            if client is None:
+                print_acc("No remote ComfyUI endpoints available")
+                return False
+
+            # Save current LoRA weights for remote access
+            lora_filename = self.remote_sampler.save_lora_for_remote(self.network, step or 0)
+
+            # Build sample configs
+            gen_configs = self._build_sample_configs(step, is_first)
+
+            if mode == RemoteSamplingMode.SYNC:
+                # Block until complete
+                print_acc(f"Submitting {len(gen_configs)} samples to remote ComfyUI (sync mode)")
+                images = self.remote_sampler.submit_and_wait(gen_configs, lora_filename, step or 0)
+                if images:
+                    self._save_remote_sample_images(images, step, gen_configs)
+                return True
+
+            elif mode in (RemoteSamplingMode.ASYNC, RemoteSamplingMode.FALLBACK):
+                # Fire off async, continue training
+                pending = self.remote_sampler.submit_samples_async(gen_configs, lora_filename, step or 0)
+                if pending:
+                    self._pending_remote_samples.extend(pending)
+                    return True
+                return False
+
+            elif mode == RemoteSamplingMode.FIRE_AND_FORGET:
+                # Submit and don't track results
+                for gen_config in gen_configs:
+                    self.remote_sampler.submit_sample(gen_config, lora_filename, step or 0)
+                print_acc(f"Submitted {len(gen_configs)} samples to remote ComfyUI (fire-and-forget)")
+                return True
+
+        except Exception as e:
+            print_acc(f"Remote sampling error: {e}")
+            return False
+
+        return False
+
+    def _save_remote_sample_images(self, images: List, step: Optional[int], gen_configs: List[GenerateImageConfig]):
+        """Save images received from remote ComfyUI."""
+        sample_folder = os.path.join(self.save_root, 'samples')
+        os.makedirs(sample_folder, exist_ok=True)
+
+        import time as time_module
+        gen_time = int(time_module.time() * 1000)
+
+        for i, img in enumerate(images):
+            if i < len(gen_configs):
+                config = gen_configs[i]
+                config.set_gen_time(gen_time)
+                try:
+                    config.save_image(img, count=i, max_count=len(images))
+                    if self.logger:
+                        config.log_image(img, count=i, max_count=len(images))
+                except Exception as e:
+                    print_acc(f"Error saving remote sample image: {e}")
+
+    def check_pending_remote_samples(self):
+        """
+        Check for completed async remote samples and save them.
+        Call this periodically during training.
+        """
+        if not self._pending_remote_samples or self.remote_sampler is None:
+            return
+
+        completed = self.remote_sampler.check_pending_samples()
+        for sample in completed:
+            print_acc(f"Remote samples for step {sample.step} ready ({sample.elapsed_time:.1f}s)")
+            if sample.images:
+                # Build gen_configs to get output paths
+                gen_configs = self._build_sample_configs(sample.step, is_first=False)
+                self._save_remote_sample_images(sample.images, sample.step, gen_configs)
+
+        # Clean up old LoRA files periodically
+        if hasattr(self, '_last_lora_cleanup_step'):
+            if (self.step_num - self._last_lora_cleanup_step) > 100:
+                self.remote_sampler.cleanup_old_loras(keep_recent=5)
+                self._last_lora_cleanup_step = self.step_num
+        else:
+            self._last_lora_cleanup_step = self.step_num
+
+    def _init_remote_sampling(self):
+        """Initialize remote sampling infrastructure (LoRA server, manager)."""
+        if not self._remote_sampling_enabled:
+            return
+
+        rs_config = self.sample_config.remote_sampling
+
+        # Start LoRA server
+        if rs_config.lora_server.enabled:
+            lora_dir = os.path.join(self.save_root, 'remote_loras')
+            self.lora_server = LoraServer(
+                host=rs_config.lora_server.host,
+                port=rs_config.lora_server.port,
+                lora_directory=lora_dir,
+                external_url=rs_config.lora_server.external_url
+            )
+            self.lora_server.start()
+
+        # Initialize remote sampling manager
+        import weakref
+        network_ref = weakref.ref(self.network) if self.network else None
+
+        self.remote_sampler = RemoteSamplingManager(
+            config=rs_config,
+            save_root=self.save_root,
+            network_ref=network_ref,
+            lora_server_ref=self.lora_server
+        )
+
+        print_acc(f"Remote sampling initialized with {len(rs_config.endpoints)} endpoint(s)")
+
+    def _shutdown_remote_sampling(self):
+        """Shutdown remote sampling infrastructure."""
+        if self.remote_sampler is not None:
+            self.remote_sampler.shutdown()
+            self.remote_sampler = None
+
+        if self.lora_server is not None:
+            self.lora_server.stop()
+            self.lora_server = None
+
+    def sample(self, step=None, is_first=False):
+        """
+        Generate sample images.
+
+        This method supports both local (on training GPU) and remote (via ComfyUI) sampling.
+        Remote sampling frees the training GPU for continued computation.
+        """
+        if not self.accelerator.is_main_process:
+            return
+        flush()
+
+        # Check if remote sampling is enabled and configured
+        if self._remote_sampling_enabled and self.network is not None:
+            rs_config = self.sample_config.remote_sampling
+            mode = rs_config.mode
+
+            # Initialize remote sampling on first use
+            if self.remote_sampler is None:
+                self._init_remote_sampling()
+
+            if mode == RemoteSamplingMode.LOCAL:
+                # Explicitly use local sampling
+                self._sample_local(step, is_first)
+
+            elif mode == RemoteSamplingMode.FALLBACK:
+                # Try remote, fall back to local if unavailable
+                if not self._sample_remote(step, is_first):
+                    print_acc("Falling back to local sampling")
+                    self._sample_local(step, is_first)
+
+            else:
+                # ASYNC, SYNC, or FIRE_AND_FORGET
+                if not self._sample_remote(step, is_first):
+                    # Remote failed but mode doesn't specify fallback
+                    print_acc(f"Remote sampling failed (mode={mode.value}), skipping samples")
+
+        else:
+            # No remote sampling configured, use local
+            self._sample_local(step, is_first)
 
     def update_training_metadata(self):
         o_dict = OrderedDict({
@@ -486,10 +671,13 @@ class BaseSDTrainProcess(BaseTrainProcess):
         pass
     
     def done_hook(self):
-        pass
-    
+        # Shutdown remote sampling infrastructure
+        self._shutdown_remote_sampling()
+
     def end_step_hook(self):
-        pass
+        # Check for completed async remote samples
+        if self._remote_sampling_enabled:
+            self.check_pending_remote_samples()
 
     def save(self, step=None):
         if not self.accelerator.is_main_process:

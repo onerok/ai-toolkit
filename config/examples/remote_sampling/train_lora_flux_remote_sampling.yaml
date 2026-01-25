@@ -1,0 +1,115 @@
+# Example: Flux LoRA training with remote ComfyUI sampling
+#
+# This configuration offloads sample generation to a remote ComfyUI instance,
+# freeing the training GPU for continued computation. Samples do NOT affect
+# training - they're purely for monitoring quality.
+#
+# Setup:
+# 1. Install the AITKLoraDownloader node in ComfyUI:
+#    cp -r comfyui_nodes/aitk_lora_downloader /path/to/ComfyUI/custom_nodes/
+#
+# 2. Restart ComfyUI with API access enabled:
+#    python main.py --listen 0.0.0.0 --port 8188
+#
+# 3. Ensure the training machine can reach ComfyUI and vice versa
+#
+# 4. Run training:
+#    uv run python run.py config/examples/remote_sampling/train_lora_flux_remote_sampling.yaml
+
+job: extension
+config:
+  name: my_flux_lora_remote
+  process:
+    - type: 'sd_trainer'
+      training_folder: "output"
+      device: cuda:0
+      trigger_word: "ohwx"
+      network:
+        type: "lora"
+        linear: 16
+        linear_alpha: 16
+      save:
+        dtype: float16
+        save_every: 500
+        max_step_saves_to_keep: 3
+      sample:
+        sampler: "flowmatch"
+        sample_every: 100
+        width: 1024
+        height: 1024
+        prompts:
+          - "ohwx person, professional portrait, studio lighting"
+          - "ohwx person in a garden, natural lighting, bokeh background"
+        neg: ""
+        seed: 42
+        walk_seed: true
+        guidance_scale: 3.5
+        sample_steps: 20
+        network_multiplier: 1.0
+
+        # Remote sampling configuration
+        remote_sampling:
+          enabled: true
+
+          # Sampling mode:
+          # - "local": Sample on training GPU (default behavior)
+          # - "async": Submit to ComfyUI, continue training, fetch results when ready
+          # - "fire_and_forget": Submit to ComfyUI, don't track results
+          # - "sync": Block training until ComfyUI completes
+          # - "fallback": Try remote, fall back to local if unavailable
+          mode: "async"
+
+          # ComfyUI endpoints - can specify multiple for load balancing
+          endpoints:
+            - url: "http://192.168.1.100:8188"
+              name: "comfyui-server-1"
+            # - url: "http://192.168.1.101:8188"
+            #   name: "comfyui-server-2"
+
+          # LoRA HTTP server - AI Toolkit serves LoRA files for ComfyUI to download
+          lora_server:
+            enabled: true
+            host: "0.0.0.0"
+            port: 8765
+            # URL that ComfyUI will use to reach the training machine
+            # This must be accessible from the ComfyUI server
+            external_url: "http://192.168.1.50:8765"
+
+          # ComfyUI workflow template (relative to training folder or absolute path)
+          workflow_template: "config/examples/remote_sampling/flux_sample_workflow.json"
+
+          # Timeouts
+          connect_timeout: 10
+          generation_timeout: 600
+
+          # Retry behavior
+          max_retries: 2
+          retry_delay: 5
+
+      datasets:
+        - folder_path: "/path/to/your/dataset"
+          caption_ext: ".txt"
+          caption_dropout_rate: 0.05
+          shuffle_tokens: false
+          cache_latents_to_disk: true
+          resolution: 1024
+
+      train:
+        batch_size: 1
+        steps: 3000
+        gradient_accumulation_steps: 1
+        train_unet: true
+        train_text_encoder: false
+        gradient_checkpointing: true
+        noise_scheduler: "flowmatch"
+        optimizer: "adamw8bit"
+        lr: 4e-4
+        ema_config:
+          use_ema: true
+          ema_decay: 0.99
+        dtype: bf16
+
+      model:
+        name_or_path: "black-forest-labs/FLUX.1-dev"
+        is_flux: true
+        quantize: true

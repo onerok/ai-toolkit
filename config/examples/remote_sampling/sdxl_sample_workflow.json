@@ -1,0 +1,101 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {"title": "Load SDXL Checkpoint"},
+    "inputs": {
+      "ckpt_name": "sd_xl_base_1.0.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "AITKLoraDownloader",
+    "_meta": {"title": "Download LoRA from AI Toolkit"},
+    "inputs": {
+      "url": "{{lora_url}}",
+      "filename": "{{lora_filename}}",
+      "overwrite": true,
+      "timeout": 60
+    }
+  },
+  "3": {
+    "class_type": "LoraLoader",
+    "_meta": {"title": "Load LoRA"},
+    "inputs": {
+      "lora_name": ["2", 0],
+      "strength_model": "{{network_multiplier}}",
+      "strength_clip": "{{network_multiplier}}",
+      "model": ["1", 0],
+      "clip": ["1", 1]
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncodeSDXL",
+    "_meta": {"title": "CLIP Text Encode SDXL (Prompt)"},
+    "inputs": {
+      "text_g": "{{prompt}}",
+      "text_l": "{{prompt}}",
+      "width": "{{width}}",
+      "height": "{{height}}",
+      "crop_w": 0,
+      "crop_h": 0,
+      "target_width": "{{width}}",
+      "target_height": "{{height}}",
+      "clip": ["3", 1]
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncodeSDXL",
+    "_meta": {"title": "CLIP Text Encode SDXL (Negative)"},
+    "inputs": {
+      "text_g": "{{negative_prompt}}",
+      "text_l": "{{negative_prompt}}",
+      "width": "{{width}}",
+      "height": "{{height}}",
+      "crop_w": 0,
+      "crop_h": 0,
+      "target_width": "{{width}}",
+      "target_height": "{{height}}",
+      "clip": ["3", 1]
+    }
+  },
+  "6": {
+    "class_type": "EmptyLatentImage",
+    "_meta": {"title": "Empty Latent Image"},
+    "inputs": {
+      "width": "{{width}}",
+      "height": "{{height}}",
+      "batch_size": 1
+    }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "_meta": {"title": "KSampler"},
+    "inputs": {
+      "seed": "{{seed}}",
+      "steps": "{{steps}}",
+      "cfg": "{{guidance_scale}}",
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1.0,
+      "model": ["3", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 0]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "_meta": {"title": "VAE Decode"},
+    "inputs": {
+      "samples": ["7", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "_meta": {"title": "Save Image"},
+    "inputs": {
+      "filename_prefix": "aitk_sample_sdxl",
+      "images": ["8", 0]
+    }
+  }
+}

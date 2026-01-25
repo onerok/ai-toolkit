@@ -109,7 +109,33 @@ class SampleConfig:
         self.samples = [SampleItem(self, **item) for item in raw_samples]
         # only for models that support it, (qwen image edit 2509 for now)
         self.do_cfg_norm: bool = kwargs.get('do_cfg_norm', False)
-        
+
+        # Remote sampling configuration
+        from toolkit.remote_sampling import RemoteSamplingConfig, RemoteSamplingMode, ComfyUIEndpoint, LoraServerConfig
+        remote_sampling_raw = kwargs.get('remote_sampling', None)
+        if remote_sampling_raw is not None:
+            # Process endpoints if provided as list of dicts
+            if 'endpoints' in remote_sampling_raw:
+                endpoints = []
+                for ep in remote_sampling_raw['endpoints']:
+                    if isinstance(ep, dict):
+                        endpoints.append(ComfyUIEndpoint(**ep))
+                    else:
+                        endpoints.append(ep)
+                remote_sampling_raw['endpoints'] = endpoints
+
+            # Process lora_server if provided as dict
+            if 'lora_server' in remote_sampling_raw and isinstance(remote_sampling_raw['lora_server'], dict):
+                remote_sampling_raw['lora_server'] = LoraServerConfig(**remote_sampling_raw['lora_server'])
+
+            # Process mode if provided as string
+            if 'mode' in remote_sampling_raw and isinstance(remote_sampling_raw['mode'], str):
+                remote_sampling_raw['mode'] = RemoteSamplingMode(remote_sampling_raw['mode'])
+
+            self.remote_sampling = RemoteSamplingConfig(**remote_sampling_raw)
+        else:
+            self.remote_sampling = RemoteSamplingConfig(enabled=False)
+
     @property
     def prompts(self):
         # for backwards compatibility as this is checked for length frequently
