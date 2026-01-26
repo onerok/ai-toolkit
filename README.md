@@ -287,6 +287,10 @@ set AI_TOOLKIT_AUTH=super_secure_password && npm run build_and_start
 $env:AI_TOOLKIT_AUTH="super_secure_password"; npm run build_and_start
 ```
 
+## UI Extension
+
+An extended version of the AI Toolkit UI with additional features is available at [malcolmrey/ai-toolkit-ui-extension](https://huggingface.co/malcolmrey/ai-toolkit-ui-extension). This extension adds batch queue management, templates, and other enhancements to the base UI.
+
 
 ## FLUX.1 Training
 
