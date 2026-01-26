@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. (Forked from <https://github.com/ostris/ai-toolkit>)
 
 ## Getting Oriented
 
