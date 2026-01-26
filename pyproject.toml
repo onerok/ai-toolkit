@@ -51,6 +51,7 @@ dependencies = [
     "av==16.0.1",
     "torchcodec; platform_machine != 'aarch64' or sys_platform != 'linux'",
     "qwen-vl-utils>=0.0.14",
+    "psutil>=7.2.1",
 ]
 
 # DGX-specific dependencies are documented in dgx_requirements.txt

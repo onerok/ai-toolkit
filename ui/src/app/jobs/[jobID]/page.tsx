@@ -10,7 +10,7 @@ import JobOverview from '@/components/JobOverview';
 import { redirect } from 'next/navigation';
 import JobActionBar from '@/components/JobActionBar';
 import JobConfigViewer from '@/components/JobConfigViewer';
-import JobLossGraph from '@/components/JobLossGraph';
+import JobMetricsPage from '@/components/JobMetricsPage';
 import { Job } from '@prisma/client';
 
 type PageKey = 'overview' | 'samples' | 'config' | 'loss_log';
@@ -38,9 +38,9 @@ const pages: Page[] = [
     mainCss: 'pt-24',
   },
   {
-    name: 'Loss Graph',
+    name: 'Metrics',
     value: 'loss_log',
-    component: JobLossGraph,
+    component: JobMetricsPage,
     mainCss: 'pt-24',
   },
   {

@@ -11,6 +11,7 @@ import traceback
 from typing import Union, List, Optional
 
 import numpy as np
+import psutil
 import yaml
 from diffusers import T2IAdapter, ControlNetModel
 from diffusers.training_utils import compute_density_for_timestep_sampling
@@ -2334,6 +2335,17 @@ class BaseSDTrainProcess(BaseTrainProcess):
                         if self.progress_bar is not None:
                             self.progress_bar.unpause()
                 
+                # log system metrics
+                if self.accelerator.is_main_process:
+                    system_metrics = {}
+                    # GPU VRAM usage
+                    if torch.cuda.is_available():
+                        system_metrics['vram_gb'] = torch.cuda.memory_allocated() / (1024 ** 3)
+                    # CPU and RAM usage
+                    system_metrics['cpu_percent'] = psutil.cpu_percent()
+                    system_metrics['ram_gb'] = psutil.virtual_memory().used / (1024 ** 3)
+                    self.logger.log(system_metrics)
+
                 # commit log
                 if self.accelerator.is_main_process:
                     with self.timer('commit_logger'):
