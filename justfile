@@ -4,6 +4,13 @@
 default:
     @just --list
 
+# First-time setup: install Python and Node dependencies, initialize database
+setup:
+    uv sync
+    cd ui && npm install
+    cd ui && npx prisma generate
+    cd ui && npx prisma db push
+
 # Start the UI and worker (accessible from network)
 start:
     cd ui && npx concurrently --restart-tries -1 --restart-after 1000 -n WORKER,UI "node dist/cron/worker.js" "npx next start --port 8675 --hostname 0.0.0.0"
