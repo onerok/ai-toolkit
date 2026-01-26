@@ -4,8 +4,33 @@
 default:
     @just --list
 
+# Check environment and warn about common issues
+check:
+    #!/usr/bin/env bash
+    echo "Checking environment..."
+    # Check for WSL2 nvidia-smi PATH issue
+    if grep -q microsoft /proc/version 2>/dev/null; then
+        if ! command -v nvidia-smi &>/dev/null; then
+            if [ -x /usr/lib/wsl/lib/nvidia-smi ]; then
+                echo "⚠️  WSL2 detected: nvidia-smi found at /usr/lib/wsl/lib/ but not in PATH"
+                echo "   Add to your shell config: fish_add_path /usr/lib/wsl/lib"
+                echo "   (GPU monitoring in UI won't work until fixed)"
+            else
+                echo "⚠️  WSL2 detected but nvidia-smi not found - GPU monitoring unavailable"
+            fi
+        else
+            echo "✓ nvidia-smi found"
+        fi
+    else
+        if command -v nvidia-smi &>/dev/null; then
+            echo "✓ nvidia-smi found"
+        else
+            echo "⚠️  nvidia-smi not found - GPU monitoring in UI unavailable"
+        fi
+    fi
+
 # First-time setup: install Python and Node dependencies, initialize database
-setup:
+setup: check
     uv sync
     cd ui && npm install
     cd ui && npx prisma generate
