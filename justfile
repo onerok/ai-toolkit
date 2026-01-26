@@ -50,3 +50,10 @@ build:
 
 # Build and start
 build-and-start: build start
+
+# Clean the UI build artifacts
+clean:
+    rm -rf ui/.next ui/dist
+
+# Clean and rebuild
+clean-build: clean build
