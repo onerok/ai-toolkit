@@ -43,6 +43,7 @@ export default function JobActionBar({
             if (onRefresh) onRefresh();
           }}
           className={`ml-2 opacity-100`}
+          title="Start Job"
         >
           <Play />
         </Button>
@@ -55,6 +56,7 @@ export default function JobActionBar({
             if (onRefresh) onRefresh();
           }}
           className={`ml-2 opacity-100`}
+          title="Remove from Queue"
         >
           <X />
         </Button>
@@ -75,17 +77,18 @@ export default function JobActionBar({
             });
           }}
           className={`ml-2 opacity-100`}
+          title="Stop Job"
         >
           <Pause />
         </Button>
       )}
       {!hideView && (
-        <Link href={`/jobs/${job.id}`} className="ml-2 text-gray-200 hover:text-gray-100 inline-block">
+        <Link href={`/jobs/${job.id}`} className="ml-2 text-gray-200 hover:text-gray-100 inline-block" title="View Job">
           <Eye />
         </Link>
       )}
       {canEdit && (
-        <Link href={`/jobs/new?id=${job.id}`} className="ml-2 hover:text-gray-100 inline-block">
+        <Link href={`/jobs/new?id=${job.id}`} className="ml-2 hover:text-gray-100 inline-block" title="Edit Job">
           <Pen />
         </Link>
       )}
@@ -114,23 +117,24 @@ export default function JobActionBar({
           });
         }}
         className={`ml-2 opacity-100`}
+        title="Delete Job"
       >
         <Trash2 />
       </Button>
       <div className="border-r border-1 border-gray-700 ml-2 inline"></div>
       <Menu>
-        <MenuButton className={'ml-2'}>
+        <MenuButton className={'ml-2'} title="More Options">
           <Cog />
         </MenuButton>
         <MenuItems anchor="bottom" className="bg-gray-900 border border-gray-700 rounded shadow-lg w-48 px-2 py-2 mt-4">
           <MenuItem>
-            <Link href={`/jobs/new?cloneId=${job.id}`} className="cursor-pointer px-4 py-1 hover:bg-gray-800 rounded block">
+            <Link href={`/jobs/new?cloneId=${job.id}`} className="cursor-pointer px-4 py-1 hover:bg-gray-800 rounded block text-gray-200">
               Clone Job
             </Link>
           </MenuItem>
           <MenuItem>
             <div
-              className="cursor-pointer px-4 py-1 hover:bg-gray-800 rounded"
+              className="cursor-pointer px-4 py-1 hover:bg-gray-800 rounded text-gray-200"
               onClick={() => {
                 let message = `Are you sure you want to mark this job as stopped? This will set the job status to 'stopped' if the status is hung. Only do this if you are 100% sure the job is stopped. This will NOT stop the job.`;
                 openConfirm({
