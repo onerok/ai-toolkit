@@ -2338,9 +2338,9 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 # log system metrics
                 if self.accelerator.is_main_process:
                     system_metrics = {}
-                    # GPU VRAM usage
+                    # GPU VRAM usage (reserved memory matches nvidia-smi)
                     if torch.cuda.is_available():
-                        system_metrics['vram_gb'] = torch.cuda.memory_allocated() / (1024 ** 3)
+                        system_metrics['vram_gb'] = torch.cuda.memory_reserved() / (1024 ** 3)
                     # CPU and RAM usage
                     system_metrics['cpu_percent'] = psutil.cpu_percent()
                     system_metrics['ram_gb'] = psutil.virtual_memory().used / (1024 ** 3)
