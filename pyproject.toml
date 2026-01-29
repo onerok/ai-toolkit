@@ -52,6 +52,7 @@ dependencies = [
     "torchcodec; platform_machine != 'aarch64' or sys_platform != 'linux'",
     "qwen-vl-utils>=0.0.14",
     "psutil>=7.2.1",
+    "flask>=3.1.2",
 ]
 
 # DGX-specific dependencies are documented in dgx_requirements.txt

@@ -6,16 +6,12 @@ import { apiClient } from '@/utils/api';
 import AudioPlayer from './AudioPlayer';
 import { isVideo, isAudio } from '@/utils/basic';
 
-// Stub implementation for caption generation
-// TODO: Replace with actual API call to caption generation service
-const generateCaptionStub = async (imgPath: string): Promise<string> => {
-  // Simulate async caption generation (2-4 seconds)
-  const delay = 2000 + Math.random() * 2000;
-  await new Promise(resolve => setTimeout(resolve, delay));
+const CAPTION_SERVICE_ENABLED_KEY = 'caption-service-enabled';
 
-  // Return a placeholder caption for now
-  return `Auto-generated caption for ${imgPath.split('/').pop()}`;
-};
+function isCaptionServiceEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return localStorage.getItem(CAPTION_SERVICE_ENABLED_KEY) !== 'false';
+}
 
 interface DatasetImageCardProps {
   imageUrl: string;
@@ -84,31 +80,30 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
 
   const handleGenerateCaption = async () => {
     if (isGeneratingCaption) return;
+    if (!isCaptionServiceEnabled()) return;
 
     setIsGeneratingCaption(true);
     abortControllerRef.current = new AbortController();
 
     try {
-      const generatedCaption = await generateCaptionStub(imageUrl);
+      const response = await apiClient.post(
+        '/api/caption/generate',
+        { imagePath: imageUrl },
+        { signal: abortControllerRef.current.signal }
+      );
 
       // Check if generation was cancelled
       if (abortControllerRef.current?.signal.aborted) {
         return;
       }
 
-      setCaption(generatedCaption);
-      // Auto-save the generated caption
-      apiClient
-        .post('/api/img/caption', { imgPath: imageUrl, caption: generatedCaption })
-        .then(res => res.data)
-        .then(() => {
-          setSavedCaption(generatedCaption);
-        })
-        .catch(error => {
-          console.error('Error saving generated caption:', error);
-        });
-    } catch (error) {
-      if (error instanceof Error && error.name !== 'AbortError') {
+      const generatedCaption = response.data.caption;
+      if (generatedCaption) {
+        setCaption(generatedCaption);
+        setSavedCaption(generatedCaption);
+      }
+    } catch (error: any) {
+      if (error?.name !== 'CanceledError' && error?.code !== 'ERR_CANCELED') {
         console.error('Error generating caption:', error);
       }
     } finally {
@@ -273,8 +268,8 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
           </div>
         )}
 
-        {/* Generate/Stop caption button - only visible when caption is empty */}
-        {inViewport && isVisible && isCaptionLoaded && caption.trim() === '' && !isGeneratingCaption && (
+        {/* Generate/Stop caption button - only visible when caption is empty and service is enabled */}
+        {inViewport && isVisible && isCaptionLoaded && caption.trim() === '' && !isGeneratingCaption && isCaptionServiceEnabled() && (
           <button
             onClick={handleGenerateCaption}
             className="absolute top-1 right-1 p-1 text-gray-400 hover:text-blue-400 transition-colors z-10"

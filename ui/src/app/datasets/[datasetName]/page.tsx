@@ -11,6 +11,7 @@ import { apiClient } from '@/utils/api';
 import FullscreenDropOverlay from '@/components/FullscreenDropOverlay';
 import SortDropdown, { SortMode } from '@/components/SortDropdown';
 import { sortByPHashSimilarity } from '@/utils/phash';
+import CaptionServiceStatus from '@/components/CaptionServiceStatus';
 
 interface ImageEntry {
   img_path: string;
@@ -152,6 +153,8 @@ export default function DatasetPage({ params }: { params: { datasetName: string 
           <h1 className="text-lg">Dataset: {datasetName}</h1>
         </div>
         <div className="flex-1"></div>
+        <CaptionServiceStatus />
+        <div className="w-px h-6 bg-gray-700 mx-2"></div>
         <SortDropdown value={sortMode} onChange={setSortMode} loading={hashLoading} />
         <div>
           <Button
