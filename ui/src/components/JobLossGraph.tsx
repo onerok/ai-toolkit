@@ -60,8 +60,33 @@ const PALETTE = [
   'rgba(129,140,248,1)', // indigo-400
 ];
 
+// Specific colors for noise-level bucketed losses (matching visualization mockup)
+const BUCKET_LOSS_COLORS: Record<string, string> = {
+  loss_concept: 'rgba(96,165,250,1)', // blue - high noise (concepts)
+  loss_structure: 'rgba(251,146,60,1)', // orange - mid noise (structure)
+  loss_detail: 'rgba(52,211,153,1)', // green/emerald - low noise (details)
+};
+
+// Display names for bucket losses (shown in legend and tooltips)
+const BUCKET_LOSS_NAMES: Record<string, string> = {
+  loss_concept: 'Concept (High Noise)',
+  loss_structure: 'Structure (Mid Noise)',
+  loss_detail: 'Detail (Low Noise)',
+};
+
 function strokeForKey(key: string) {
+  // Use predefined colors for bucket losses
+  if (key in BUCKET_LOSS_COLORS) {
+    return BUCKET_LOSS_COLORS[key];
+  }
   return PALETTE[hashToIndex(key, PALETTE.length)];
+}
+
+function displayNameForKey(key: string) {
+  if (key in BUCKET_LOSS_NAMES) {
+    return BUCKET_LOSS_NAMES[key];
+  }
+  return key;
 }
 
 export default function JobLossGraph({ job }: Props) {
@@ -282,6 +307,7 @@ export default function JobLossGraph({ job }: Props) {
 
                 {activeKeys.map(k => {
                   const color = strokeForKey(k);
+                  const displayName = displayNameForKey(k);
 
                   return (
                     <g key={k}>
@@ -289,7 +315,7 @@ export default function JobLossGraph({ job }: Props) {
                         <Line
                           type="monotone"
                           dataKey={`${k}__raw`}
-                          name={`${k} (raw)`}
+                          name={`${displayName} (raw)`}
                           stroke={color.replace('1)', '0.40)')}
                           strokeWidth={1.25}
                           dot={false}
@@ -300,7 +326,7 @@ export default function JobLossGraph({ job }: Props) {
                         <Line
                           type="monotone"
                           dataKey={`${k}__smooth`}
-                          name={`${k}`}
+                          name={displayName}
                           stroke={color}
                           strokeWidth={2}
                           dot={false}
@@ -347,10 +373,10 @@ export default function JobLossGraph({ job }: Props) {
                         : 'bg-gray-900 text-gray-200 border-gray-800 hover:bg-gray-800/60',
                     ].join(' ')}
                     aria-pressed={enabled[k] !== false}
-                    title={k}
+                    title={displayNameForKey(k)}
                   >
                     <span className="inline-block h-2 w-2 rounded-full mr-2" style={{ background: strokeForKey(k) }} />
-                    {k}
+                    {displayNameForKey(k)}
                   </button>
                 ))}
               </div>

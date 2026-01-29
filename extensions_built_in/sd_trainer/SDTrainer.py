@@ -113,6 +113,92 @@ class SDTrainer(BaseSDTrainProcess):
         else:
             raise ValueError(f"Unknown guidance loss target type {type(self.train_config.guidance_loss_target)}")
 
+        # Bucket loss tracking for noise-level separated visualization
+        # Buckets: detail (0-333), structure (333-666), concept (666-1000)
+        self._bucket_loss_sums = {'loss_detail': 0.0, 'loss_structure': 0.0, 'loss_concept': 0.0}
+        self._bucket_loss_counts = {'loss_detail': 0, 'loss_structure': 0, 'loss_concept': 0}
+
+    def _reset_bucket_losses(self):
+        """Reset bucket loss accumulators for the next training step."""
+        self._bucket_loss_sums = {'loss_detail': 0.0, 'loss_structure': 0.0, 'loss_concept': 0.0}
+        self._bucket_loss_counts = {'loss_detail': 0, 'loss_structure': 0, 'loss_concept': 0}
+
+    def _accumulate_bucket_losses(self, per_sample_loss: 'torch.Tensor', timesteps: 'torch.Tensor'):
+        """
+        Accumulate losses into buckets based on timestep ranges.
+
+        Args:
+            per_sample_loss: Loss tensor of shape (batch_size,) - one loss per sample
+            timesteps: Timestep tensor of shape (batch_size,) - timestep for each sample
+
+        Buckets:
+            - loss_detail: timesteps 0-333 (low noise, fine details)
+            - loss_structure: timesteps 333-666 (mid noise, structure)
+            - loss_concept: timesteps 666-1000 (high noise, concepts)
+        """
+        # Detach to avoid any gradient issues
+        losses = per_sample_loss.detach().cpu()
+        ts = timesteps.detach().cpu().float()
+
+        for i in range(len(ts)):
+            t = ts[i].item()
+            loss_val = losses[i].item()
+
+            if t < 333:
+                self._bucket_loss_sums['loss_detail'] += loss_val
+                self._bucket_loss_counts['loss_detail'] += 1
+            elif t < 666:
+                self._bucket_loss_sums['loss_structure'] += loss_val
+                self._bucket_loss_counts['loss_structure'] += 1
+            else:
+                self._bucket_loss_sums['loss_concept'] += loss_val
+                self._bucket_loss_counts['loss_concept'] += 1
+
+    def _accumulate_bucket_losses_from_scalar(self, scalar_loss: float, timesteps: 'torch.Tensor'):
+        """
+        Accumulate a scalar loss into buckets based on timestep distribution.
+
+        Used for loss functions that return already-averaged scalars (e.g., guided_loss, mean_flow_loss).
+        The scalar loss is assigned to each bucket that has samples, weighted by sample count.
+
+        Args:
+            scalar_loss: The averaged loss value (scalar)
+            timesteps: Timestep tensor of shape (batch_size,) - timestep for each sample
+        """
+        ts = timesteps.detach().cpu().float()
+
+        # Count samples per bucket
+        bucket_counts = {'loss_detail': 0, 'loss_structure': 0, 'loss_concept': 0}
+        for i in range(len(ts)):
+            t = ts[i].item()
+            if t < 333:
+                bucket_counts['loss_detail'] += 1
+            elif t < 666:
+                bucket_counts['loss_structure'] += 1
+            else:
+                bucket_counts['loss_concept'] += 1
+
+        # Assign the scalar loss to each bucket that has samples
+        # Each bucket gets the same loss value (since we can't separate per-sample losses)
+        for key, count in bucket_counts.items():
+            if count > 0:
+                self._bucket_loss_sums[key] += scalar_loss * count
+                self._bucket_loss_counts[key] += count
+
+    def _get_bucket_loss_averages(self) -> dict:
+        """
+        Compute average losses for each bucket.
+
+        Returns:
+            Dict with bucket names as keys and average losses as values.
+            Only includes buckets that have at least one sample.
+        """
+        result = {}
+        for key in self._bucket_loss_sums:
+            count = self._bucket_loss_counts[key]
+            if count > 0:
+                result[key] = self._bucket_loss_sums[key] / count
+        return result
 
     def before_model_load(self):
         pass
@@ -857,6 +943,10 @@ class SDTrainer(BaseSDTrainProcess):
             elif self.train_config.min_snr_gamma is not None and self.train_config.min_snr_gamma > 0.000001 and not ignore_snr:
                 # add min_snr_gamma
                 loss = apply_snr_weight(loss, timesteps, self.sd.noise_scheduler, self.train_config.min_snr_gamma)
+
+        # Accumulate per-sample losses into timestep buckets for visualization
+        # At this point, loss has shape (batch_size,) with all adjustments applied
+        self._accumulate_bucket_losses(loss, timesteps)
 
         loss = loss.mean()
         
@@ -1937,7 +2027,9 @@ class SDTrainer(BaseSDTrainProcess):
                         mask_multiplier=mask_multiplier,
                         prior_pred=prior_pred,
                     )
-                    
+                    # Accumulate bucket losses for visualization (using scalar approximation)
+                    self._accumulate_bucket_losses_from_scalar(loss.item(), timesteps)
+
                 elif self.train_config.loss_type == 'mean_flow':
                     loss = self.get_mean_flow_loss(
                         noisy_latents=noisy_latents,
@@ -1951,6 +2043,8 @@ class SDTrainer(BaseSDTrainProcess):
                         unconditional_embeds=unconditional_embeds,
                         prior_pred=prior_pred,
                     )
+                    # Accumulate bucket losses for visualization (using scalar approximation)
+                    self._accumulate_bucket_losses_from_scalar(loss.item(), timesteps)
                 else:
                     with self.timer('predict_unet'):
                         noise_pred = self.predict_noise(
@@ -2105,6 +2199,13 @@ class SDTrainer(BaseSDTrainProcess):
         loss_dict = OrderedDict(
             {'loss': (total_loss / len(batch_list)).item()}
         )
+
+        # Add bucketed losses for noise-level separated visualization
+        bucket_losses = self._get_bucket_loss_averages()
+        loss_dict.update(bucket_losses)
+
+        # Reset bucket accumulators for the next training step
+        self._reset_bucket_losses()
 
         self.end_of_training_loop()
 
