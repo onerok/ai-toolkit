@@ -37,6 +37,15 @@ const config: Config = {
           50: '#fffbeb',
         },
       },
+      animation: {
+        'processing-bar': 'processing-bar 1.5s ease-in-out infinite',
+      },
+      keyframes: {
+        'processing-bar': {
+          '0%': { transform: 'translateX(-100%)' },
+          '100%': { transform: 'translateX(400%)' },
+        },
+      },
     },
   },
   plugins: [],

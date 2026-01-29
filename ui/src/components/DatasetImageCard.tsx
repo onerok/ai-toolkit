@@ -1,10 +1,21 @@
 import React, { useRef, useEffect, useState, ReactNode, KeyboardEvent } from 'react';
-import { FaTrashAlt, FaEye, FaEyeSlash } from 'react-icons/fa';
+import { FaTrashAlt, FaEye, FaEyeSlash, FaMagic, FaStop } from 'react-icons/fa';
 import { openConfirm } from './ConfirmModal';
 import classNames from 'classnames';
 import { apiClient } from '@/utils/api';
 import AudioPlayer from './AudioPlayer';
 import { isVideo, isAudio } from '@/utils/basic';
+
+// Stub implementation for caption generation
+// TODO: Replace with actual API call to caption generation service
+const generateCaptionStub = async (imgPath: string): Promise<string> => {
+  // Simulate async caption generation (2-4 seconds)
+  const delay = 2000 + Math.random() * 2000;
+  await new Promise(resolve => setTimeout(resolve, delay));
+
+  // Return a placeholder caption for now
+  return `Auto-generated caption for ${imgPath.split('/').pop()}`;
+};
 
 interface DatasetImageCardProps {
   imageUrl: string;
@@ -29,6 +40,8 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
   const [caption, setCaption] = useState<string>('');
   const [savedCaption, setSavedCaption] = useState<string>('');
   const isGettingCaption = useRef<boolean>(false);
+  const [isGeneratingCaption, setIsGeneratingCaption] = useState<boolean>(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const fetchCaption = async () => {
     if (isGettingCaption.current || isCaptionLoaded) return;
@@ -67,6 +80,48 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
       .catch(error => {
         console.error('Error saving caption:', error);
       });
+  };
+
+  const handleGenerateCaption = async () => {
+    if (isGeneratingCaption) return;
+
+    setIsGeneratingCaption(true);
+    abortControllerRef.current = new AbortController();
+
+    try {
+      const generatedCaption = await generateCaptionStub(imageUrl);
+
+      // Check if generation was cancelled
+      if (abortControllerRef.current?.signal.aborted) {
+        return;
+      }
+
+      setCaption(generatedCaption);
+      // Auto-save the generated caption
+      apiClient
+        .post('/api/img/caption', { imgPath: imageUrl, caption: generatedCaption })
+        .then(res => res.data)
+        .then(() => {
+          setSavedCaption(generatedCaption);
+        })
+        .catch(error => {
+          console.error('Error saving generated caption:', error);
+        });
+    } catch (error) {
+      if (error instanceof Error && error.name !== 'AbortError') {
+        console.error('Error generating caption:', error);
+      }
+    } finally {
+      setIsGeneratingCaption(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      setIsGeneratingCaption(false);
+    }
   };
 
   // Only fetch caption when the component is both in viewport and visible
@@ -206,36 +261,68 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
         )}
       </div>
       <div
-        className={classNames('w-full p-2 bg-gray-800 text-white text-sm rounded-b-lg h-[75px]', {
+        className={classNames('w-full bg-gray-800 text-white text-sm rounded-b-lg h-[75px] relative', {
           'border-blue-500 border-2': !isCaptionCurrent,
           'border-transparent border-2': isCaptionCurrent,
         })}
       >
-        {inViewport && isVisible && isCaptionLoaded && (
-          <form
-            onSubmit={e => {
-              e.preventDefault();
-              saveCaption();
-            }}
-            onBlur={saveCaption}
-          >
-            <textarea
-              className="w-full bg-transparent resize-none outline-none focus:ring-0 focus:outline-none"
-              value={caption}
-              rows={3}
-              onChange={e => setCaption(e.target.value)}
-              onKeyDown={handleKeyDown}
-            />
-          </form>
-        )}
-        {(!inViewport || !isVisible) && isCaptionLoaded && (
-          <div className="w-full h-full flex items-center justify-center text-gray-400">
-            {isVisible ? 'Scroll into view to edit caption' : 'Show content to edit caption'}
+        {/* Processing indicator bar */}
+        {isGeneratingCaption && (
+          <div className="absolute top-0 left-0 right-0 h-[2px] bg-gray-700 overflow-hidden">
+            <div className="h-full w-1/3 bg-blue-500 animate-processing-bar" />
           </div>
         )}
-        {!isCaptionLoaded && (
-          <div className="w-full h-full flex items-center justify-center text-gray-400">Loading caption...</div>
+
+        {/* Generate/Stop caption button - only visible when caption is empty */}
+        {inViewport && isVisible && isCaptionLoaded && caption.trim() === '' && !isGeneratingCaption && (
+          <button
+            onClick={handleGenerateCaption}
+            className="absolute top-1 right-1 p-1 text-gray-400 hover:text-blue-400 transition-colors z-10"
+            title="Generate caption"
+          >
+            <FaMagic size={12} />
+          </button>
         )}
+
+        {/* Stop button when generating */}
+        {isGeneratingCaption && (
+          <button
+            onClick={handleStopGeneration}
+            className="absolute top-1 right-1 p-1 text-gray-400 hover:text-red-400 transition-colors z-10"
+            title="Stop generation"
+          >
+            <FaStop size={12} />
+          </button>
+        )}
+
+        <div className="p-2 h-full">
+          {inViewport && isVisible && isCaptionLoaded && (
+            <form
+              onSubmit={e => {
+                e.preventDefault();
+                saveCaption();
+              }}
+              onBlur={saveCaption}
+            >
+              <textarea
+                className="w-full bg-transparent resize-none outline-none focus:ring-0 focus:outline-none"
+                value={caption}
+                rows={3}
+                onChange={e => setCaption(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={isGeneratingCaption}
+              />
+            </form>
+          )}
+          {(!inViewport || !isVisible) && isCaptionLoaded && (
+            <div className="w-full h-full flex items-center justify-center text-gray-400">
+              {isVisible ? 'Scroll into view to edit caption' : 'Show content to edit caption'}
+            </div>
+          )}
+          {!isCaptionLoaded && (
+            <div className="w-full h-full flex items-center justify-center text-gray-400">Loading caption...</div>
+          )}
+        </div>
       </div>
     </div>
   );
