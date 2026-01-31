@@ -5,13 +5,7 @@ import classNames from 'classnames';
 import { apiClient } from '@/utils/api';
 import AudioPlayer from './AudioPlayer';
 import { isVideo, isAudio } from '@/utils/basic';
-
-const CAPTION_SERVICE_ENABLED_KEY = 'caption-service-enabled';
-
-function isCaptionServiceEnabled(): boolean {
-  if (typeof window === 'undefined') return false;
-  return localStorage.getItem(CAPTION_SERVICE_ENABLED_KEY) !== 'false';
-}
+import { getCaptionProvider, isCaptionEnabled } from './CaptionServiceStatus';
 
 interface DatasetImageCardProps {
   imageUrl: string;
@@ -80,14 +74,18 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
 
   const handleGenerateCaption = async () => {
     if (isGeneratingCaption) return;
-    if (!isCaptionServiceEnabled()) return;
+    if (!isCaptionEnabled()) return;
 
     setIsGeneratingCaption(true);
     abortControllerRef.current = new AbortController();
 
     try {
+      // Choose endpoint based on provider
+      const provider = getCaptionProvider();
+      const endpoint = provider === 'openai' ? '/api/caption/generate-openai' : '/api/caption/generate';
+
       const response = await apiClient.post(
-        '/api/caption/generate',
+        endpoint,
         { imagePath: imageUrl },
         { signal: abortControllerRef.current.signal }
       );
@@ -269,7 +267,7 @@ const DatasetImageCard: React.FC<DatasetImageCardProps> = ({
         )}
 
         {/* Generate/Stop caption button - only visible when caption is empty and service is enabled */}
-        {inViewport && isVisible && isCaptionLoaded && caption.trim() === '' && !isGeneratingCaption && isCaptionServiceEnabled() && (
+        {inViewport && isVisible && isCaptionLoaded && caption.trim() === '' && !isGeneratingCaption && isCaptionEnabled() && (
           <button
             onClick={handleGenerateCaption}
             className="absolute top-1 right-1 p-1 text-gray-400 hover:text-blue-400 transition-colors z-10"
