@@ -32,6 +32,7 @@ export default function TrainingForm() {
   const { gpuList, isGPUInfoLoaded } = useGPUInfo();
   const { datasets, status: datasetFetchStatus } = useDatasetList();
   const [datasetOptions, setDatasetOptions] = useState<{ value: string; label: string }[]>([]);
+  const [datasetImageCounts, setDatasetImageCounts] = useState<Record<string, number>>({});
   const [showAdvancedView, setShowAdvancedView] = useState(false);
 
   const [jobConfig, setJobConfig] = useNestedState<JobConfig>(objectCopy(defaultJobConfig));
@@ -41,8 +42,16 @@ export default function TrainingForm() {
     if (!isSettingsLoaded) return;
     if (datasetFetchStatus !== 'success') return;
 
-    const datasetOptions = datasets.map(name => ({ value: path.join(settings.DATASETS_FOLDER, name), label: name }));
+    const datasetOptions = datasets.map(d => ({ value: path.join(settings.DATASETS_FOLDER, d.name), label: d.name }));
     setDatasetOptions(datasetOptions);
+
+    // Build lookup map: folder_path -> imageCount
+    const imageCounts: Record<string, number> = {};
+    datasets.forEach(d => {
+      const fullPath = path.join(settings.DATASETS_FOLDER, d.name);
+      imageCounts[fullPath] = d.imageCount;
+    });
+    setDatasetImageCounts(imageCounts);
     const defaultDatasetPath = defaultDatasetConfig.folder_path;
 
     for (let i = 0; i < jobConfig.config.process[0].datasets.length; i++) {
@@ -249,6 +258,7 @@ export default function TrainingForm() {
               setGpuIDs={setGpuIDs}
               gpuList={gpuList}
               datasetOptions={datasetOptions}
+              datasetImageCounts={datasetImageCounts}
             />
           </ErrorBoundary>
 
