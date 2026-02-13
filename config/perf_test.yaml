@@ -1,0 +1,74 @@
+# Performance Test Config
+# Minimal config for quick benchmark runs (< 2 min on 24GB GPU)
+#
+# Usage:
+#   uv run python run.py config/perf_test.yaml
+#   uv run python scripts/perf_benchmark.py --config config/perf_test.yaml
+#
+# IMPORTANT: You must create a test dataset folder with at least 1 image + caption.
+# Recommended: Use 5-10 small images (256-512px) with simple captions.
+#
+# Create test dataset:
+#   mkdir -p datasets/perf_test
+#   # Copy a few small images and create .txt captions with same names
+---
+job: extension
+config:
+  name: "perf_benchmark"
+  process:
+    - type: 'sd_trainer'
+      training_folder: "output/perf_test"
+      performance_log_every: 5  # Print timing stats every 5 steps
+      device: cuda:0
+
+      network:
+        type: "lora"
+        linear: 4  # Small rank for speed
+        linear_alpha: 4
+
+      save:
+        dtype: float16
+        save_every: 10  # Save at step 10 for VRAM leak testing
+        max_step_saves_to_keep: 1
+
+      datasets:
+        # UPDATE THIS PATH to your test dataset
+        - folder_path: "datasets/perf_test"
+          caption_ext: "txt"
+          cache_latents_to_disk: false  # Faster for small test runs
+          resolution: [256]  # Small for speed
+
+      train:
+        batch_size: 1
+        steps: 20  # Quick run
+        gradient_accumulation_steps: 1
+        train_unet: true
+        train_text_encoder: false
+        gradient_checkpointing: true
+        noise_scheduler: "flowmatch"
+        optimizer: "adamw8bit"
+        lr: 1e-4
+        skip_first_sample: true
+        disable_sampling: true
+        dtype: bf16
+        ema_config:
+          use_ema: false  # Disable for speed
+
+      model:
+        name_or_path: "black-forest-labs/FLUX.1-dev"
+        is_flux: true
+        quantize: true
+
+      sample:
+        sampler: "flowmatch"
+        sample_every: 9999  # Never sample
+        width: 256
+        height: 256
+        prompts:
+          - "test prompt"
+        seed: 42
+
+meta:
+  name: "[name]"
+  version: '1.0'
+  description: "Performance benchmark config - minimal settings for fast iteration"

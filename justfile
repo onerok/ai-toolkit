@@ -57,3 +57,35 @@ clean:
 
 # Clean and rebuild
 clean-build: clean build
+
+# =============================================================================
+# Performance Benchmarking (Phase 0 Test Harness)
+# =============================================================================
+
+# Quick memory-only benchmark (no dataset needed, ~5 sec)
+perf-memory:
+    uv run python scripts/perf_benchmark.py --memory-only
+
+# Run benchmark with training (requires datasets/perf_test/)
+perf-train steps="20" save_at="10":
+    uv run python scripts/perf_benchmark.py --steps {{steps}} --save-at {{save_at}}
+
+# Capture baseline with a tag (memory-only)
+perf-baseline tag:
+    uv run python scripts/collect_baselines.py --tag "{{tag}}" --memory-only
+
+# Capture baseline with training (requires datasets/perf_test/)
+perf-baseline-train tag steps="20" save_at="10":
+    uv run python scripts/collect_baselines.py --tag "{{tag}}" --steps {{steps}} --save-at {{save_at}}
+
+# Compare current state against a saved baseline
+perf-compare baseline:
+    uv run python scripts/compare_baselines.py --baseline "{{baseline}}" --current --memory-only
+
+# Compare two saved baselines
+perf-diff baseline1 baseline2:
+    uv run python scripts/compare_baselines.py --baseline "{{baseline1}}" --compare "{{baseline2}}"
+
+# List saved baselines
+perf-list:
+    @ls -la docs/perf/baselines/*.json 2>/dev/null || echo "No baselines found in docs/perf/baselines/"
