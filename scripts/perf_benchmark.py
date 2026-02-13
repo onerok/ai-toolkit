@@ -22,20 +22,19 @@ Usage:
 import argparse
 import gc
 import json
-import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Callable, Dict, List, Optional
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import torch
+import torch  # noqa: E402
 
 
 @dataclass
@@ -116,11 +115,15 @@ class BenchmarkMetrics:
 
     # Computed summary metrics
     avg_step_time_s: float = 0.0
+    pre_save_step_time_s: float = 0.0
     post_save_step_time_s: float = 0.0
     slowdown_ratio: float = 1.0
     peak_vram_mb: float = 0.0
+    pre_save_vram_mb: float = 0.0
+    save_peak_vram_mb: float = 0.0
     post_save_vram_mb: float = 0.0
     leaked_mb: float = 0.0
+    save_duration_s: float = 0.0
     num_alloc_retries: int = 0
     fragmentation_ratio: float = 0.0
 
@@ -140,6 +143,7 @@ class BenchmarkMetrics:
                 if pre_save and post_save:
                     pre_avg = sum(pre_save) / len(pre_save)
                     post_avg = sum(post_save) / len(post_save)
+                    self.pre_save_step_time_s = pre_avg
                     self.post_save_step_time_s = post_avg
                     self.slowdown_ratio = post_avg / pre_avg if pre_avg > 0 else 1.0
 
@@ -150,8 +154,15 @@ class BenchmarkMetrics:
 
             # Find pre-save and post-save snapshots
             pre_save_snap = next((s for s in self.memory_snapshots if s.label == "pre_save"), None)
+            save_peak_snap = next((s for s in self.memory_snapshots if s.label == "during_save_peak"), None)
             post_save_snap = next((s for s in self.memory_snapshots if s.label == "post_save_settled"), None)
+            if post_save_snap is None:
+                post_save_snap = next((s for s in self.memory_snapshots if s.label == "post_save"), None)
 
+            if pre_save_snap:
+                self.pre_save_vram_mb = pre_save_snap.reserved_mb
+            if save_peak_snap:
+                self.save_peak_vram_mb = save_peak_snap.reserved_mb
             if pre_save_snap and post_save_snap:
                 self.post_save_vram_mb = post_save_snap.reserved_mb
                 self.leaked_mb = post_save_snap.reserved_mb - pre_save_snap.reserved_mb
@@ -182,11 +193,15 @@ class BenchmarkResult:
             "config": self.config,
             "metrics": {
                 "peak_vram_mb": self.metrics.peak_vram_mb,
+                "pre_save_vram_mb": self.metrics.pre_save_vram_mb,
+                "save_peak_vram_mb": self.metrics.save_peak_vram_mb,
                 "post_save_vram_mb": self.metrics.post_save_vram_mb,
                 "leaked_mb": self.metrics.leaked_mb,
                 "avg_step_time_s": self.metrics.avg_step_time_s,
+                "pre_save_step_time_s": self.metrics.pre_save_step_time_s,
                 "post_save_step_time_s": self.metrics.post_save_step_time_s,
                 "slowdown_ratio": self.metrics.slowdown_ratio,
+                "save_duration_s": self.metrics.save_duration_s,
                 "num_alloc_retries": self.metrics.num_alloc_retries,
                 "fragmentation_ratio": self.metrics.fragmentation_ratio,
                 "total_duration_s": self.metrics.total_duration_s,
@@ -197,6 +212,110 @@ class BenchmarkResult:
                 "memory_snapshots": [asdict(s) for s in self.metrics.memory_snapshots],
             }
         }
+
+
+def _get_train_like_processes(job) -> List[Any]:
+    """Return processes that expose train loop hooks used for instrumentation."""
+    processes = []
+    for process in getattr(job, "process", []):
+        if all(hasattr(process, attr) for attr in ("save", "end_step_hook", "timer")):
+            processes.append(process)
+    return processes
+
+
+def _instrument_training_processes(job, metrics: BenchmarkMetrics, save_at: Optional[int]) -> List[Callable[[], None]]:
+    """
+    Wrap process hooks to collect per-step timing and save-boundary memory snapshots.
+    """
+    teardowns: List[Callable[[], None]] = []
+    tracked_processes = _get_train_like_processes(job)
+    if not tracked_processes:
+        return teardowns
+
+    process = tracked_processes[0]
+    save_state = {
+        "save_step": None,
+        "captured_step1": False,
+        "captured_step2": False,
+        "pending_train_loop_timing": None,
+    }
+
+    original_timer_stop = process.timer.stop
+    original_save = process.save
+    original_end_step_hook = process.end_step_hook
+
+    def wrapped_timer_stop(timer_name):
+        if timer_name == "train_loop" and timer_name in process.timer.active_timers:
+            started_at = process.timer.active_timers[timer_name]
+            elapsed = time.time() - started_at
+            save_state["pending_train_loop_timing"] = (int(getattr(process, "step_num", -1)), elapsed)
+        return original_timer_stop(timer_name)
+
+    def wrapped_save(step=None):
+        capture_target_save = save_at is not None and step == save_at
+        if not capture_target_save:
+            return original_save(step)
+
+        if torch.cuda.is_available():
+            metrics.memory_snapshots.append(MemorySnapshot.capture("pre_save"))
+            torch.cuda.reset_peak_memory_stats()
+
+        save_started_at = time.time()
+        result = original_save(step)
+        save_duration = time.time() - save_started_at
+        metrics.save_duration_s = max(metrics.save_duration_s, save_duration)
+
+        if save_state["save_step"] is None:
+            save_state["save_step"] = int(step)
+
+        if torch.cuda.is_available():
+            peak_reserved_mb = torch.cuda.max_memory_reserved() / (1024**2)
+            peak_allocated_mb = torch.cuda.max_memory_allocated() / (1024**2)
+            peak_snap = MemorySnapshot.capture("during_save_peak")
+            peak_snap.reserved_mb = peak_reserved_mb
+            peak_snap.allocated_mb = peak_allocated_mb
+            peak_snap.max_allocated_mb = peak_allocated_mb
+            metrics.memory_snapshots.append(peak_snap)
+            metrics.memory_snapshots.append(MemorySnapshot.capture("post_save"))
+
+        return result
+
+    def wrapped_end_step_hook():
+        pending_timing = save_state.pop("pending_train_loop_timing", None)
+        if pending_timing is not None:
+            step_id, elapsed = pending_timing
+            save_step = save_state["save_step"]
+            metrics.step_times.append(
+                StepTiming(
+                    step=step_id,
+                    duration_s=elapsed,
+                    is_save_step=(save_step is not None and step_id == save_step),
+                    is_post_save=(save_step is not None and step_id > save_step),
+                )
+            )
+
+            if save_step is not None and torch.cuda.is_available():
+                if not save_state["captured_step1"] and step_id == save_step + 1:
+                    metrics.memory_snapshots.append(MemorySnapshot.capture("post_save_step_1"))
+                    save_state["captured_step1"] = True
+                if not save_state["captured_step2"] and step_id == save_step + 2:
+                    metrics.memory_snapshots.append(MemorySnapshot.capture("post_save_step_2"))
+                    metrics.memory_snapshots.append(MemorySnapshot.capture("post_save_settled"))
+                    save_state["captured_step2"] = True
+
+        return original_end_step_hook()
+
+    process.timer.stop = wrapped_timer_stop
+    process.save = wrapped_save
+    process.end_step_hook = wrapped_end_step_hook
+
+    def teardown():
+        process.timer.stop = original_timer_stop
+        process.save = original_save
+        process.end_step_hook = original_end_step_hook
+
+    teardowns.append(teardown)
+    return teardowns
 
 
 def get_git_commit() -> str:
@@ -234,10 +353,6 @@ def run_memory_only_benchmark() -> BenchmarkResult:
 
     # Import memory management modules
     try:
-        from toolkit.memory_management.manager_modules import (
-            clear_device_state_buffers,
-            _DEVICE_STATE,
-        )
         from jobs.process.BaseSDTrainProcess import flush
     except ImportError as e:
         print(f"Could not import memory modules: {e}")
@@ -350,11 +465,11 @@ def run_training_benchmark(
 
     # Import and run training
     try:
-        from toolkit.job import get_job
         from toolkit.config import get_config
+        from toolkit.job import get_job
 
         # Load and modify config
-        config = get_config(config_path, {})
+        config = get_config(config_path, None)
 
         # Override steps and save settings
         if "process" in config.get("config", {}):
@@ -385,20 +500,23 @@ def run_training_benchmark(
         start_time = time.time()
 
         # Create and run job
-        # Note: For full integration, we'd need to hook into the training loop
-        # to capture per-step timing. For now, measure total time.
         job = get_job(config)
+        teardowns = _instrument_training_processes(job, result.metrics, save_at)
 
         print("  Starting training...")
-        job.run()
+        try:
+            job.run()
+        finally:
+            for teardown in teardowns:
+                teardown()
 
         result.metrics.total_duration_s = time.time() - start_time
 
         # Capture post-training memory
         result.metrics.memory_snapshots.append(MemorySnapshot.capture("post_training"))
 
-        # Estimate per-step time
-        if steps > 0:
+        # Fallback estimate if hooks did not produce step-level timings
+        if steps > 0 and not result.metrics.step_times:
             result.metrics.avg_step_time_s = result.metrics.total_duration_s / steps
 
         job.cleanup()
@@ -425,15 +543,23 @@ def print_result_summary(result: BenchmarkResult):
     print(f"Timestamp: {result.timestamp}")
 
     m = result.metrics
-    print(f"\nTiming:")
+    print("\nTiming:")
     print(f"  Total duration:     {m.total_duration_s:.2f}s")
     print(f"  Avg step time:      {m.avg_step_time_s:.3f}s")
+    if m.pre_save_step_time_s > 0:
+        print(f"  Pre-save step:      {m.pre_save_step_time_s:.3f}s")
     if m.post_save_step_time_s > 0:
         print(f"  Post-save step:     {m.post_save_step_time_s:.3f}s")
         print(f"  Slowdown ratio:     {m.slowdown_ratio:.2f}x")
+    if m.save_duration_s > 0:
+        print(f"  Save duration:      {m.save_duration_s:.3f}s")
 
-    print(f"\nMemory:")
+    print("\nMemory:")
     print(f"  Peak VRAM:          {m.peak_vram_mb:.0f} MB")
+    if m.pre_save_vram_mb > 0:
+        print(f"  Pre-save VRAM:      {m.pre_save_vram_mb:.0f} MB")
+    if m.save_peak_vram_mb > 0:
+        print(f"  Save peak VRAM:     {m.save_peak_vram_mb:.0f} MB")
     if m.post_save_vram_mb > 0:
         print(f"  Post-save VRAM:     {m.post_save_vram_mb:.0f} MB")
         print(f"  Leaked:             {m.leaked_mb:.0f} MB")
