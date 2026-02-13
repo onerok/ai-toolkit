@@ -62,14 +62,14 @@ const PALETTE = [
 
 // Special colors for known loss metrics
 const SPECIAL_COLORS: Record<string, string> = {
-  loss: 'rgba(96,165,250,1)', // blue - primary training loss (noisy)
-  stable: 'rgba(52,211,153,1)', // emerald - stable validation loss (clean signal)
+  'loss/loss': 'rgba(96,165,250,1)', // blue - primary training loss (noisy)
+  'loss/stable': 'rgba(52,211,153,1)', // emerald - stable validation loss (clean signal)
 };
 
 // Display names for known metrics
 const DISPLAY_NAMES: Record<string, string> = {
-  loss: 'Training Loss',
-  stable: 'Stable Loss',
+  'loss/loss': 'Training Loss',
+  'loss/stable': 'Stable Loss',
 };
 
 function strokeForKey(key: string) {
@@ -317,6 +317,7 @@ export default function JobLossGraph({ job }: Props) {
                           strokeWidth={1.25}
                           dot={false}
                           isAnimationActive={false}
+                          connectNulls={true}
                         />
                       )}
                       {showSmoothed && (
@@ -328,6 +329,7 @@ export default function JobLossGraph({ job }: Props) {
                           strokeWidth={2}
                           dot={false}
                           isAnimationActive={false}
+                          connectNulls={true}
                         />
                       )}
                     </g>

@@ -243,8 +243,10 @@ class SDTrainer(BaseSDTrainProcess):
         total_loss = 0.0
         count = 0
 
-        # Disable network if present (evaluate base model + current training state)
-        with torch.no_grad(), temp_rng(seed):
+        # Use network context to include LoRA weights in evaluation
+        network = self.network if self.network is not None else BlankNetwork()
+
+        with torch.no_grad(), temp_rng(seed), network:
             for repeat_idx in range(num_repeats):
                 # Compute timestep range for this bucket
                 min_t = int(repeat_idx * max_timesteps / num_repeats)
@@ -560,10 +562,17 @@ class SDTrainer(BaseSDTrainProcess):
 
             # Cache prompt embeds for stable loss (use blank prompt for unbiased evaluation)
             with torch.no_grad():
-                self.stable_loss_prompt_embeds = self.sd.encode_prompt("").to(
-                    self.device_torch,
-                    dtype=self.sd.torch_dtype
-                ).detach()
+                # Use cached blank embeds if available (text encoder may be unloaded)
+                if self.cached_blank_embeds is not None:
+                    self.stable_loss_prompt_embeds = self.cached_blank_embeds.to(
+                        self.device_torch,
+                        dtype=self.sd.torch_dtype
+                    ).detach()
+                else:
+                    self.stable_loss_prompt_embeds = self.sd.encode_prompt("").to(
+                        self.device_torch,
+                        dtype=self.sd.torch_dtype
+                    ).detach()
 
             if self.stable_loss_images:
                 print_acc(f"Stable loss enabled: evaluating every {self.train_config.stable_loss_steps} steps")
