@@ -60,31 +60,28 @@ const PALETTE = [
   'rgba(129,140,248,1)', // indigo-400
 ];
 
-// Specific colors for noise-level bucketed losses (matching visualization mockup)
-const BUCKET_LOSS_COLORS: Record<string, string> = {
-  loss_concept: 'rgba(96,165,250,1)', // blue - high noise (concepts)
-  loss_structure: 'rgba(251,146,60,1)', // orange - mid noise (structure)
-  loss_detail: 'rgba(52,211,153,1)', // green/emerald - low noise (details)
+// Special colors for known loss metrics
+const SPECIAL_COLORS: Record<string, string> = {
+  loss: 'rgba(96,165,250,1)', // blue - primary training loss (noisy)
+  stable: 'rgba(52,211,153,1)', // emerald - stable validation loss (clean signal)
 };
 
-// Display names for bucket losses (shown in legend and tooltips)
-const BUCKET_LOSS_NAMES: Record<string, string> = {
-  loss_concept: 'Concept (High Noise)',
-  loss_structure: 'Structure (Mid Noise)',
-  loss_detail: 'Detail (Low Noise)',
+// Display names for known metrics
+const DISPLAY_NAMES: Record<string, string> = {
+  loss: 'Training Loss',
+  stable: 'Stable Loss',
 };
 
 function strokeForKey(key: string) {
-  // Use predefined colors for bucket losses
-  if (key in BUCKET_LOSS_COLORS) {
-    return BUCKET_LOSS_COLORS[key];
+  if (key in SPECIAL_COLORS) {
+    return SPECIAL_COLORS[key];
   }
   return PALETTE[hashToIndex(key, PALETTE.length)];
 }
 
 function displayNameForKey(key: string) {
-  if (key in BUCKET_LOSS_NAMES) {
-    return BUCKET_LOSS_NAMES[key];
+  if (key in DISPLAY_NAMES) {
+    return DISPLAY_NAMES[key];
   }
   return key;
 }

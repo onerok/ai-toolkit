@@ -30,6 +30,7 @@ type Props = {
   setGpuIDs: (value: string | null) => void;
   gpuList: any;
   datasetOptions: any;
+  datasetImageCounts: Record<string, number>;
 };
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -44,6 +45,7 @@ export default function SimpleJob({
   setGpuIDs,
   gpuList,
   datasetOptions,
+  datasetImageCounts,
 }: Props) {
   const modelArch = useMemo(() => {
     return modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch) as ModelArch;
@@ -102,6 +104,29 @@ export default function SimpleJob({
   if (numTrainingCols == 5) {
     trainingBarClass = 'grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6';
   }
+
+  const trainingPreview = useMemo(() => {
+    const datasets = jobConfig.config.process[0].datasets;
+    const steps = jobConfig.config.process[0].train.steps;
+    const batchSize = jobConfig.config.process[0].train.batch_size;
+
+    let totalImages = 0;
+    let effectiveSamples = 0;
+
+    for (const ds of datasets) {
+      const count = datasetImageCounts[ds.folder_path] || 0;
+      totalImages += count;
+      effectiveSamples += count * (ds.num_repeats || 1);
+    }
+
+    if (totalImages === 0) return null;
+
+    const stepsPerEpoch = Math.ceil(effectiveSamples / batchSize);
+    const epochs = steps / stepsPerEpoch;
+    const timesPerImage = (steps * batchSize) / totalImages;
+
+    return { totalImages, epochs, timesPerImage };
+  }, [jobConfig.config.process[0].datasets, jobConfig.config.process[0].train.steps, jobConfig.config.process[0].train.batch_size, datasetImageCounts]);
 
   const transformerQuantizationOptions: GroupedSelectOption[] | SelectOption[] = useMemo(() => {
     const hasARA = modelArch?.accuracyRecoveryAdapters && Object.keys(modelArch.accuracyRecoveryAdapters).length > 0;
@@ -682,6 +707,11 @@ export default function SimpleJob({
               </div>
             </div>
           </Card>
+          {trainingPreview && (
+            <div className="mt-2 px-4 text-xs text-gray-500">
+              📊 {trainingPreview.totalImages} images • {trainingPreview.epochs.toFixed(1)} epochs • ~{Math.round(trainingPreview.timesPerImage)}× per image
+            </div>
+          )}
         </div>
         <div>
           <Card title="Advanced" collapsible>
@@ -715,6 +745,57 @@ export default function SimpleJob({
                       onChange={value => setJobConfig(value, 'config.process[0].train.differential_guidance_scale')}
                       placeholder="eg. 3.0"
                       min={0}
+                    />
+                  </>
+                )}
+              </div>
+              {/* Stable Loss Section */}
+              <div>
+                <Checkbox
+                  label="Enable Stable Loss"
+                  docKey={'train.stable_loss'}
+                  className="pt-1"
+                  checked={jobConfig.config.process[0].train.stable_loss_enabled || false}
+                  onChange={value => {
+                    setJobConfig(value, 'config.process[0].train.stable_loss_enabled');
+                    if (!value) {
+                      setJobConfig(undefined, 'config.process[0].train.stable_loss_path');
+                    }
+                  }}
+                />
+                {jobConfig.config.process[0].train.stable_loss_enabled && (
+                  <>
+                    <TextInput
+                      label="Validation Images Path"
+                      className="pt-2"
+                      value={(jobConfig.config.process[0].train.stable_loss_path as string) || ''}
+                      onChange={value => setJobConfig(value, 'config.process[0].train.stable_loss_path')}
+                      placeholder="/path/to/validation/images"
+                    />
+                    <NumberInput
+                      label="Evaluate Every N Steps"
+                      className="pt-2"
+                      value={(jobConfig.config.process[0].train.stable_loss_steps as number) || 100}
+                      onChange={value => setJobConfig(value, 'config.process[0].train.stable_loss_steps')}
+                      placeholder="100"
+                      min={10}
+                    />
+                    <NumberInput
+                      label="Seed"
+                      className="pt-2"
+                      value={(jobConfig.config.process[0].train.stable_loss_seed as number) || 1234}
+                      onChange={value => setJobConfig(value, 'config.process[0].train.stable_loss_seed')}
+                      placeholder="1234"
+                      min={0}
+                    />
+                    <NumberInput
+                      label="Timestep Buckets"
+                      className="pt-2"
+                      value={(jobConfig.config.process[0].train.stable_loss_repeats as number) || 4}
+                      onChange={value => setJobConfig(value, 'config.process[0].train.stable_loss_repeats')}
+                      placeholder="4"
+                      min={1}
+                      max={10}
                     />
                   </>
                 )}

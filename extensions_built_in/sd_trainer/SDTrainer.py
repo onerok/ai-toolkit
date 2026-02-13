@@ -1,6 +1,7 @@
 import os
 import random
 from collections import OrderedDict
+from contextlib import contextmanager
 from typing import Union, Literal, List, Optional
 
 import numpy as np
@@ -44,6 +45,43 @@ from torchvision.transforms import functional as TF
 def flush():
     torch.cuda.empty_cache()
     gc.collect()
+
+
+@contextmanager
+def temp_rng(seed: int):
+    """
+    Context manager to temporarily set RNG state for deterministic evaluation.
+
+    Saves all RNG states (torch, cuda, numpy, python random), sets them to the
+    given seed, yields, then restores the original states. This allows for
+    deterministic loss computation without affecting the main training RNG.
+    """
+    # Save current states
+    torch_state = torch.get_rng_state()
+    cuda_states = {}
+    if torch.cuda.is_available():
+        for device_id in range(torch.cuda.device_count()):
+            cuda_states[device_id] = torch.cuda.get_rng_state(device_id)
+    np_state = np.random.get_state()
+    py_state = random.getstate()
+
+    # Set seed
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    try:
+        yield
+    finally:
+        # Restore states
+        torch.set_rng_state(torch_state)
+        if torch.cuda.is_available():
+            for device_id, state in cuda_states.items():
+                torch.cuda.set_rng_state(state, device_id)
+        np.random.set_state(np_state)
+        random.setstate(py_state)
 
 
 adapter_transforms = transforms.Compose([
@@ -113,95 +151,143 @@ class SDTrainer(BaseSDTrainProcess):
         else:
             raise ValueError(f"Unknown guidance loss target type {type(self.train_config.guidance_loss_target)}")
 
-        # Bucket loss tracking for noise-level separated visualization
-        # Buckets: detail (0-333), structure (333-666), concept (666-1000)
-        self._bucket_loss_sums = {'loss_detail': 0.0, 'loss_structure': 0.0, 'loss_concept': 0.0}
-        self._bucket_loss_counts = {'loss_detail': 0, 'loss_structure': 0, 'loss_concept': 0}
-
-    def _reset_bucket_losses(self):
-        """Reset bucket loss accumulators for the next training step."""
-        self._bucket_loss_sums = {'loss_detail': 0.0, 'loss_structure': 0.0, 'loss_concept': 0.0}
-        self._bucket_loss_counts = {'loss_detail': 0, 'loss_structure': 0, 'loss_concept': 0}
-
-    def _accumulate_bucket_losses(self, per_sample_loss: 'torch.Tensor', timesteps: 'torch.Tensor'):
-        """
-        Accumulate losses into buckets based on timestep ranges.
-
-        Args:
-            per_sample_loss: Loss tensor of shape (batch_size,) - one loss per sample
-            timesteps: Timestep tensor of shape (batch_size,) - timestep for each sample
-
-        Buckets:
-            - loss_detail: timesteps 0-333 (low noise, fine details)
-            - loss_structure: timesteps 333-666 (mid noise, structure)
-            - loss_concept: timesteps 666-1000 (high noise, concepts)
-        """
-        # Detach to avoid any gradient issues
-        losses = per_sample_loss.detach().cpu()
-        ts = timesteps.detach().cpu().float()
-
-        for i in range(len(ts)):
-            t = ts[i].item()
-            loss_val = losses[i].item()
-
-            if t < 333:
-                self._bucket_loss_sums['loss_detail'] += loss_val
-                self._bucket_loss_counts['loss_detail'] += 1
-            elif t < 666:
-                self._bucket_loss_sums['loss_structure'] += loss_val
-                self._bucket_loss_counts['loss_structure'] += 1
-            else:
-                self._bucket_loss_sums['loss_concept'] += loss_val
-                self._bucket_loss_counts['loss_concept'] += 1
-
-    def _accumulate_bucket_losses_from_scalar(self, scalar_loss: float, timesteps: 'torch.Tensor'):
-        """
-        Accumulate a scalar loss into buckets based on timestep distribution.
-
-        Used for loss functions that return already-averaged scalars (e.g., guided_loss, mean_flow_loss).
-        The scalar loss is assigned to each bucket that has samples, weighted by sample count.
-
-        Args:
-            scalar_loss: The averaged loss value (scalar)
-            timesteps: Timestep tensor of shape (batch_size,) - timestep for each sample
-        """
-        ts = timesteps.detach().cpu().float()
-
-        # Count samples per bucket
-        bucket_counts = {'loss_detail': 0, 'loss_structure': 0, 'loss_concept': 0}
-        for i in range(len(ts)):
-            t = ts[i].item()
-            if t < 333:
-                bucket_counts['loss_detail'] += 1
-            elif t < 666:
-                bucket_counts['loss_structure'] += 1
-            else:
-                bucket_counts['loss_concept'] += 1
-
-        # Assign the scalar loss to each bucket that has samples
-        # Each bucket gets the same loss value (since we can't separate per-sample losses)
-        for key, count in bucket_counts.items():
-            if count > 0:
-                self._bucket_loss_sums[key] += scalar_loss * count
-                self._bucket_loss_counts[key] += count
-
-    def _get_bucket_loss_averages(self) -> dict:
-        """
-        Compute average losses for each bucket.
-
-        Returns:
-            Dict with bucket names as keys and average losses as values.
-            Only includes buckets that have at least one sample.
-        """
-        result = {}
-        for key in self._bucket_loss_sums:
-            count = self._bucket_loss_counts[key]
-            if count > 0:
-                result[key] = self._bucket_loss_sums[key] / count
-        return result
+        # Stable loss images for deterministic validation loss
+        self.stable_loss_images: Optional[List[torch.Tensor]] = None
+        # Cached prompt embeds for stable loss computation
+        self.stable_loss_prompt_embeds: Optional[PromptEmbeds] = None
 
     def before_model_load(self):
         pass
+
+    def _load_stable_loss_images(self, path: str) -> List[torch.Tensor]:
+        """
+        Load representative images for stable loss computation.
+
+        Args:
+            path: Path to a single image file or a directory containing 1-2 images.
+
+        Returns:
+            List of image tensors (as latents), ready for stable loss computation.
+        """
+        image_paths = []
+        if os.path.isfile(path):
+            image_paths = [path]
+        elif os.path.isdir(path):
+            # Get image files from directory
+            valid_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp'}
+            for f in sorted(os.listdir(path)):
+                ext = os.path.splitext(f)[1].lower()
+                if ext in valid_extensions:
+                    image_paths.append(os.path.join(path, f))
+                    if len(image_paths) >= 2:  # Limit to 2 images
+                        break
+        else:
+            print_acc(f"Warning: stable_loss_path '{path}' not found. Stable loss disabled.")
+            return []
+
+        if not image_paths:
+            print_acc(f"Warning: No valid images found at '{path}'. Stable loss disabled.")
+            return []
+
+        print_acc(f"Loading {len(image_paths)} image(s) for stable loss computation")
+
+        latents_list = []
+        dtype = get_torch_dtype(self.train_config.dtype)
+
+        for img_path in image_paths:
+            try:
+                # Load and preprocess image
+                img = Image.open(img_path).convert('RGB')
+                # Resize to a standard size for consistent loss computation
+                # Use 512x512 or model's default resolution
+                target_size = 512
+                if hasattr(self.sd, 'default_resolution'):
+                    target_size = self.sd.default_resolution
+                img = img.resize((target_size, target_size), Image.LANCZOS)
+
+                # Convert to tensor (0-1 range)
+                img_tensor = TF.to_tensor(img).unsqueeze(0)  # [1, 3, H, W]
+                img_tensor = img_tensor.to(self.device_torch, dtype=dtype)
+
+                # Encode to latent space
+                with torch.no_grad():
+                    latents = self.sd.encode_images(img_tensor).to(dtype=dtype)
+
+                latents_list.append(latents)
+                print_acc(f"  Loaded: {os.path.basename(img_path)}")
+
+            except Exception as e:
+                print_acc(f"Warning: Failed to load image '{img_path}': {e}")
+
+        return latents_list
+
+    def compute_stable_loss(self) -> Optional[float]:
+        """
+        Compute deterministic validation loss on representative images.
+
+        Uses fixed RNG seeds and uniform timestep coverage to produce
+        clean, reproducible loss curves that show true training progress.
+
+        Returns:
+            Averaged stable loss value, or None if stable loss is not configured.
+        """
+        if not self.stable_loss_images or not self.stable_loss_prompt_embeds:
+            return None
+
+        seed = self.train_config.stable_loss_seed
+        num_repeats = self.train_config.stable_loss_repeats
+        dtype = get_torch_dtype(self.train_config.dtype)
+
+        max_timesteps = self.sd.noise_scheduler.config.num_train_timesteps
+
+        total_loss = 0.0
+        count = 0
+
+        # Disable network if present (evaluate base model + current training state)
+        with torch.no_grad(), temp_rng(seed):
+            for repeat_idx in range(num_repeats):
+                # Compute timestep range for this bucket
+                min_t = int(repeat_idx * max_timesteps / num_repeats)
+                max_t = int((repeat_idx + 1) * max_timesteps / num_repeats)
+
+                for latents in self.stable_loss_images:
+                    latents = latents.to(self.device_torch, dtype=dtype)
+
+                    # Sample a timestep within this bucket
+                    timestep = torch.randint(min_t, max_t, (1,), device=self.device_torch)
+
+                    # Generate noise with fixed seed (already set by temp_rng)
+                    noise = torch.randn_like(latents)
+
+                    # Add noise to latents
+                    noisy_latents = self.sd.noise_scheduler.add_noise(latents, noise, timestep)
+
+                    # Get prompt embeddings
+                    prompt_embeds = self.stable_loss_prompt_embeds.to(self.device_torch, dtype=dtype)
+
+                    # Predict noise
+                    noise_pred = self.sd.predict_noise(
+                        latents=noisy_latents,
+                        conditional_embeddings=prompt_embeds,
+                        unconditional_embeddings=None,
+                        timestep=timestep,
+                        guidance_scale=1.0,  # No CFG for stable loss
+                    )
+
+                    # Compute loss target based on model type
+                    if self.sd.is_flow_matching:
+                        target = noise - latents
+                    else:
+                        target = noise
+
+                    # MSE loss
+                    loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float())
+                    total_loss += loss.item()
+                    count += 1
+
+        if count > 0:
+            return total_loss / count
+        return None
     
     def cache_sample_prompts(self):
         if self.train_config.disable_sampling:
@@ -461,6 +547,34 @@ class SDTrainer(BaseSDTrainProcess):
                     vae.train()
                 except:
                     pass
+
+        # Initialize stable loss if enabled
+        if self.train_config.stable_loss_enabled and self.train_config.stable_loss_path:
+            print_acc("Initializing stable loss computation...")
+            # Make sure VAE is on device for encoding images
+            vae_was_on_cpu = self.sd.vae.device.type == 'cpu'
+            if vae_was_on_cpu:
+                self.sd.vae.to(self.device_torch)
+
+            self.stable_loss_images = self._load_stable_loss_images(self.train_config.stable_loss_path)
+
+            # Cache prompt embeds for stable loss (use blank prompt for unbiased evaluation)
+            with torch.no_grad():
+                self.stable_loss_prompt_embeds = self.sd.encode_prompt("").to(
+                    self.device_torch,
+                    dtype=self.sd.torch_dtype
+                ).detach()
+
+            if self.stable_loss_images:
+                print_acc(f"Stable loss enabled: evaluating every {self.train_config.stable_loss_steps} steps")
+                print_acc(f"  Images: {len(self.stable_loss_images)}, Seed: {self.train_config.stable_loss_seed}, Repeats: {self.train_config.stable_loss_repeats}")
+            else:
+                print_acc("Stable loss disabled: no images loaded")
+
+            # Restore VAE if it was on CPU
+            if vae_was_on_cpu and self.is_latents_cached:
+                self.sd.vae.to('cpu')
+                flush()
 
 
     def process_output_for_turbo(self, pred, noisy_latents, timesteps, noise, batch):
@@ -943,10 +1057,6 @@ class SDTrainer(BaseSDTrainProcess):
             elif self.train_config.min_snr_gamma is not None and self.train_config.min_snr_gamma > 0.000001 and not ignore_snr:
                 # add min_snr_gamma
                 loss = apply_snr_weight(loss, timesteps, self.sd.noise_scheduler, self.train_config.min_snr_gamma)
-
-        # Accumulate per-sample losses into timestep buckets for visualization
-        # At this point, loss has shape (batch_size,) with all adjustments applied
-        self._accumulate_bucket_losses(loss, timesteps)
 
         loss = loss.mean()
         
@@ -2027,8 +2137,6 @@ class SDTrainer(BaseSDTrainProcess):
                         mask_multiplier=mask_multiplier,
                         prior_pred=prior_pred,
                     )
-                    # Accumulate bucket losses for visualization (using scalar approximation)
-                    self._accumulate_bucket_losses_from_scalar(loss.item(), timesteps)
 
                 elif self.train_config.loss_type == 'mean_flow':
                     loss = self.get_mean_flow_loss(
@@ -2043,8 +2151,6 @@ class SDTrainer(BaseSDTrainProcess):
                         unconditional_embeds=unconditional_embeds,
                         prior_pred=prior_pred,
                     )
-                    # Accumulate bucket losses for visualization (using scalar approximation)
-                    self._accumulate_bucket_losses_from_scalar(loss.item(), timesteps)
                 else:
                     with self.timer('predict_unet'):
                         noise_pred = self.predict_noise(
@@ -2169,6 +2275,7 @@ class SDTrainer(BaseSDTrainProcess):
                         self.accelerator.clip_grad_norm_(self.params[i]['params'], self.train_config.max_grad_norm)
                 else:
                     self.accelerator.clip_grad_norm_(self.params, self.train_config.max_grad_norm)
+
             # only step if we are not accumulating
             with self.timer('optimizer_step'):
                 self.optimizer.step()
@@ -2176,6 +2283,7 @@ class SDTrainer(BaseSDTrainProcess):
                 self.optimizer.zero_grad(set_to_none=True)
                 if self.adapter and isinstance(self.adapter, CustomAdapter):
                     self.adapter.post_weight_update()
+
             if self.ema is not None:
                 with self.timer('ema_update'):
                     self.ema.update()
@@ -2196,16 +2304,18 @@ class SDTrainer(BaseSDTrainProcess):
                 # Let's make sure we don't update any embedding weights besides the newly added token
                 self.adapter.restore_embeddings()
 
+        current_loss = (total_loss / len(batch_list)).item()
         loss_dict = OrderedDict(
-            {'loss': (total_loss / len(batch_list)).item()}
+            {'loss': current_loss}
         )
 
-        # Add bucketed losses for noise-level separated visualization
-        bucket_losses = self._get_bucket_loss_averages()
-        loss_dict.update(bucket_losses)
-
-        # Reset bucket accumulators for the next training step
-        self._reset_bucket_losses()
+        # Compute stable loss periodically if enabled
+        if (self.train_config.stable_loss_enabled and
+            self.stable_loss_images and
+            self.step_num % self.train_config.stable_loss_steps == 0):
+            stable_loss = self.compute_stable_loss()
+            if stable_loss is not None:
+                loss_dict['stable'] = stable_loss
 
         self.end_of_training_loop()
 

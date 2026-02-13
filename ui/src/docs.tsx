@@ -311,9 +311,31 @@ const docs: { [key: string]: ConfigDoc } = {
     description: (
       <>
         Number of Repeats will allow you to repeate the items in a dataset multiple times. This is useful when you are using multiple
-        datasets and want to balance the number of samples from each dataset. For instance, if you have a small dataset of 10 images 
+        datasets and want to balance the number of samples from each dataset. For instance, if you have a small dataset of 10 images
         and a large dataset of 100 images, you can set the small dataset to have 10 repeats to effectively make it 100 images, making
         the two datasets occour equally during training.
+      </>
+    ),
+  },
+  'train.stable_loss': {
+    title: 'Stable Loss (Validation)',
+    description: (
+      <>
+        Stable Loss computes deterministic validation loss on held-out images to track true training progress.
+        Unlike noisy per-step training loss, stable loss produces clean curves that show when the model is
+        actually learning vs overfitting.
+        <br />
+        <br />
+        <strong>How it works:</strong> At regular intervals, the model predicts noise on your validation images
+        using fixed random seeds and uniform timestep coverage. This produces reproducible loss values that
+        reveal the U-shaped curve: loss drops as the model learns, then rises as it begins overfitting.
+        <br />
+        <br />
+        <strong>The minimum of the stable loss curve is your optimal stopping point.</strong>
+        <br />
+        <br />
+        Provide 1-3 representative images from your dataset (or similar images you hold out from training).
+        More images = smoother signal, but 1-2 is usually sufficient.
       </>
     ),
   },

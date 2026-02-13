@@ -91,6 +91,11 @@ export const defaultJobConfig: JobConfig = {
           diff_output_preservation_class: 'person',
           switch_boundary_every: 1,
           loss_type: 'mse',
+          // Stable loss defaults
+          stable_loss_enabled: false,
+          stable_loss_steps: 100,
+          stable_loss_seed: 1234,
+          stable_loss_repeats: 4,
         },
         logging: {
           log_every: 1,

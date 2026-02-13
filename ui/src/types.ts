@@ -146,6 +146,12 @@ export interface TrainConfig {
   loss_type: 'mse' | 'mae' | 'wavelet' | 'stepped';
   do_differential_guidance?: boolean;
   differential_guidance_scale?: number;
+  // Stable loss (deterministic validation)
+  stable_loss_enabled?: boolean;
+  stable_loss_path?: string;
+  stable_loss_steps?: number;
+  stable_loss_seed?: number;
+  stable_loss_repeats?: number;
 }
 
 export interface QuantizeKwargsConfig {

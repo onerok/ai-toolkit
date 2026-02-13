@@ -564,6 +564,14 @@ class TrainConfig:
         # stabilizes empty prompts to be zeroed predictions
         self.do_blank_stabilization = kwargs.get('do_blank_stabilization', False)
 
+        # Stable loss - deterministic validation loss for clean loss curves
+        # Based on spacepxl/demystifying-sd-finetuning approach
+        self.stable_loss_enabled: bool = kwargs.get('stable_loss_enabled', False)
+        self.stable_loss_path: Optional[str] = kwargs.get('stable_loss_path', None)  # path to 1-2 representative images
+        self.stable_loss_steps: int = kwargs.get('stable_loss_steps', 100)  # evaluate every N steps
+        self.stable_loss_seed: int = kwargs.get('stable_loss_seed', 1234)  # fixed seed for deterministic eval
+        self.stable_loss_repeats: int = kwargs.get('stable_loss_repeats', 4)  # timestep buckets for uniform coverage
+
 
 ModelArch = Literal['sd1', 'sd2', 'sd3', 'sdxl', 'pixart', 'pixart_sigma', 'auraflow', 'flux', 'flex1', 'flex2', 'lumina2', 'vega', 'ssd', 'wan21']
 
