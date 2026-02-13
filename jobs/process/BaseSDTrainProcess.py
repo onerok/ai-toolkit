@@ -74,9 +74,28 @@ import hashlib
 from toolkit.util.blended_blur_noise import get_blended_blur_noise
 from toolkit.util.get_model import get_model_class
 
-def flush():
-    torch.cuda.empty_cache()
+def flush(clear_bouncing_buffers=False, synchronize=False, sync_device: Optional[torch.device] = None):
+    if torch.cuda.is_available() and synchronize:
+        from toolkit.memory_management.manager_modules import get_device_state_devices
+
+        if isinstance(sync_device, str):
+            sync_device = torch.device(sync_device)
+
+        cuda_devices = [sync_device] if sync_device is not None else get_device_state_devices(cuda_only=True)
+        if not cuda_devices:
+            cuda_devices = [torch.device(f"cuda:{torch.cuda.current_device()}")]
+
+        for dev in cuda_devices:
+            with torch.cuda.device(dev):
+                torch.cuda.synchronize()
+
+    if clear_bouncing_buffers:
+        from toolkit.memory_management.manager_modules import clear_device_state_buffers
+        clear_device_state_buffers(sync_device)
+
     gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 class BaseSDTrainProcess(BaseTrainProcess):
@@ -492,10 +511,21 @@ class BaseSDTrainProcess(BaseTrainProcess):
     def end_step_hook(self):
         pass
 
+    def post_save_cleanup(self):
+        flush(
+            clear_bouncing_buffers=True,
+            synchronize=True,
+            sync_device=self.device_torch,
+        )
+
     def save(self, step=None):
         if not self.accelerator.is_main_process:
             return
-        flush()
+        flush(
+            clear_bouncing_buffers=True,
+            synchronize=True,
+            sync_device=self.device_torch,
+        )
         if self.ema is not None:
             # always save params as ema
             self.ema.eval()
@@ -686,7 +716,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
         if self.ema is not None:
             self.ema.train()
-        flush()
+        self.post_save_cleanup()
 
     # Called before the model is loaded
     def hook_before_model_load(self):

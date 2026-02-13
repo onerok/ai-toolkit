@@ -56,6 +56,29 @@ def _get_device_state(device: torch.device):
     return _DEVICE_STATE[device]
 
 
+def get_device_state_devices(cuda_only: bool = False):
+    """Return device keys currently tracked by memory manager state."""
+    devices = list(_DEVICE_STATE.keys())
+    if cuda_only:
+        return [dev for dev in devices if isinstance(dev, torch.device) and dev.type == "cuda"]
+    return devices
+
+
+def clear_device_state_buffers(device: Optional[torch.device] = None):
+    """Clear per-device ping-pong/staging buffers to release tensor references."""
+    if isinstance(device, str):
+        device = torch.device(device)
+
+    devices = [device] if device is not None else list(_DEVICE_STATE.keys())
+    for dev in devices:
+        state = _DEVICE_STATE.get(dev)
+        if not state:
+            continue
+        for key in ("w_buffers", "b_buffers", "w_bwd_buffers", "w_grad_buffers", "b_grad_buffers"):
+            if key in state:
+                state[key] = [None, None]
+
+
 # (ADD) detect torchao wrapper tensors
 def _is_ao_quantized_tensor(t: Optional[torch.Tensor]) -> bool:
     if t is None:

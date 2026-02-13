@@ -1,0 +1,58 @@
+{
+  "tag": "phase1-before",
+  "commit": "e6c4a94",
+  "timestamp": "2026-02-13T17:21:54.522339",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "vram_gb": 31.84234619140625,
+    "cuda_version": "12.8",
+    "driver_version": "591.59",
+    "torch_version": "2.10.0+cu128",
+    "python_version": "3.11.11"
+  },
+  "config": {
+    "config_path": null,
+    "steps": 20,
+    "resolution": 256,
+    "save_at": 10,
+    "dataset_path": null
+  },
+  "metrics": {
+    "peak_vram_mb": 17396.0,
+    "post_save_vram_mb": 0.0,
+    "leaked_mb": 0.0,
+    "avg_step_time_s": 3.3428226470947267,
+    "post_save_step_time_s": 0.0,
+    "slowdown_ratio": 1.0,
+    "num_alloc_retries": 0,
+    "fragmentation_ratio": 0.004281049927066571,
+    "total_duration_s": 66.85645294189453,
+    "step_count": 0
+  },
+  "raw": {
+    "step_times": [],
+    "memory_snapshots": [
+      {
+        "timestamp": 1771024914.6603234,
+        "label": "pre_training",
+        "allocated_mb": 0.0,
+        "reserved_mb": 0.0,
+        "max_allocated_mb": 0.0,
+        "num_alloc_retries": 0
+      },
+      {
+        "timestamp": 1771024981.5170286,
+        "label": "post_training",
+        "allocated_mb": 17321.52685546875,
+        "reserved_mb": 17396.0,
+        "max_allocated_mb": 19846.158203125,
+        "num_alloc_retries": 0
+      }
+    ]
+  },
+  "git": {
+    "commit": "e6c4a94",
+    "branch": "feat/system-metrics-graph",
+    "dirty": true
+  }
+}
