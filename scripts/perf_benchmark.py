@@ -28,7 +28,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, ClassVar, Dict, List, Optional
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -75,6 +75,7 @@ class HardwareInfo:
 @dataclass
 class MemorySnapshot:
     """CUDA memory state at a point in time."""
+    _last_timestamp: ClassVar[float] = 0.0
     timestamp: float
     label: str
     allocated_mb: float = 0.0
@@ -84,7 +85,11 @@ class MemorySnapshot:
 
     @classmethod
     def capture(cls, label: str) -> "MemorySnapshot":
-        snap = cls(timestamp=time.time(), label=label)
+        timestamp = time.time()
+        if timestamp <= cls._last_timestamp:
+            timestamp = cls._last_timestamp + 1e-6
+        cls._last_timestamp = timestamp
+        snap = cls(timestamp=timestamp, label=label)
         if torch.cuda.is_available():
             snap.allocated_mb = torch.cuda.memory_allocated() / (1024**2)
             snap.reserved_mb = torch.cuda.memory_reserved() / (1024**2)
@@ -237,18 +242,31 @@ def _instrument_training_processes(job, metrics: BenchmarkMetrics, save_at: Opti
         "save_step": None,
         "captured_step1": False,
         "captured_step2": False,
+        "pending_train_loop_step": None,
+        "pending_train_loop_started_monotonic": None,
         "pending_train_loop_timing": None,
     }
 
+    original_timer_start = process.timer.start
     original_timer_stop = process.timer.stop
     original_save = process.save
     original_end_step_hook = process.end_step_hook
 
+    def wrapped_timer_start(timer_name):
+        if timer_name == "train_loop":
+            save_state["pending_train_loop_step"] = int(getattr(process, "step_num", -1))
+            save_state["pending_train_loop_started_monotonic"] = time.perf_counter()
+        return original_timer_start(timer_name)
+
     def wrapped_timer_stop(timer_name):
-        if timer_name == "train_loop" and timer_name in process.timer.active_timers:
-            started_at = process.timer.active_timers[timer_name]
-            elapsed = time.time() - started_at
-            save_state["pending_train_loop_timing"] = (int(getattr(process, "step_num", -1)), elapsed)
+        if timer_name == "train_loop":
+            started_monotonic = save_state.get("pending_train_loop_started_monotonic")
+            step_id = save_state.get("pending_train_loop_step", int(getattr(process, "step_num", -1)))
+            if started_monotonic is not None:
+                elapsed = max(0.0, time.perf_counter() - started_monotonic)
+                save_state["pending_train_loop_timing"] = (step_id, elapsed)
+            save_state["pending_train_loop_started_monotonic"] = None
+            save_state["pending_train_loop_step"] = None
         return original_timer_stop(timer_name)
 
     def wrapped_save(step=None):
@@ -305,11 +323,13 @@ def _instrument_training_processes(job, metrics: BenchmarkMetrics, save_at: Opti
 
         return original_end_step_hook()
 
+    process.timer.start = wrapped_timer_start
     process.timer.stop = wrapped_timer_stop
     process.save = wrapped_save
     process.end_step_hook = wrapped_end_step_hook
 
     def teardown():
+        process.timer.start = original_timer_start
         process.timer.stop = original_timer_stop
         process.save = original_save
         process.end_step_hook = original_end_step_hook
