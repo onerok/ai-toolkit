@@ -62,6 +62,10 @@ clean-build: clean build
 # Performance Benchmarking (Phase 0 Test Harness)
 # =============================================================================
 
+# Download test dataset for benchmarking (naruto-blip-captions subset)
+perf-dataset count="20":
+    uv run python scripts/download_perf_dataset.py --count {{count}}
+
 # Quick memory-only benchmark (no dataset needed, ~5 sec)
 perf-memory:
     uv run python scripts/perf_benchmark.py --memory-only
