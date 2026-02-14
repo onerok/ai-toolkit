@@ -398,13 +398,15 @@ Each phase includes:
 
 ## User Decisions
 
-- **Scope:** Full plan — all 6 phases
+- **Scope:** Full plan — all 7 phases
 - **Migration:** Keep existing bouncing as fallback, add conductor as opt-in
 - **Quantization:** All phases must handle bitsandbytes/torchao quantized weights
 
 ---
 
 ## Implementation Log
+
+Historical notes from a prior iteration. Use the phase docs and phase overview above as the current execution guide.
 
 ### 2026-02-13: Phase 1 Implementation & Benchmark Enhancement
 

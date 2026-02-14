@@ -30,7 +30,7 @@ Result: PCIe transfers are uncoordinated, causing congestion and stalls.
 
 | File | Change |
 |------|--------|
-| NEW: `toolkit/memory_management/offload_conductor.py` | OffloadStrategy, OffloadConductor |
+| `toolkit/memory_management/offload_conductor.py` | OffloadStrategy, OffloadConductor (create or refactor) |
 | `toolkit/memory_management/manager.py` | Integration entry points for layer transfer allocators |
 | `jobs/process/BaseSDTrainProcess.py` | Lifecycle setup/teardown and safety gating |
 | Model setup/checkpointing integration | Register layer order and wrap checkpointed blocks |
@@ -55,7 +55,7 @@ Before implementing, preserve these invariants from OneTrainer and existing AI T
 
 4. **Do not silently defer every offload when gradients are present.**
    - Gradient-present offload deferral is a narrow multi-GPU async-reduce exception.
-   - Otherwise this should fail fast (or be gated behind fused-backward guarantees), not degrade silently.
+   - Otherwise this should fail fast (or be gated by Phase 4 capability/compatibility checks), not degrade silently.
 
 5. **Use existing config schema names unless explicitly adding new keys.**
    - Current repo uses `model.layer_offloading_*` knobs, not `memory_management.use_offload_conductor`.
