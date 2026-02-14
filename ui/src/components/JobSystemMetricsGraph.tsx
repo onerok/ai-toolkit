@@ -26,7 +26,8 @@ const METRIC_CONFIG: Record<string, { label: string; color: string; unit: string
 };
 
 export default function JobSystemMetricsGraph({ job, defaultCollapsed = true }: Props) {
-  const { series, metricKeys, hasMetrics, status, refreshMetrics } = useJobSystemMetrics(job.id, 2000);
+  const pollInterval = job.status === 'running' ? 2000 : null;
+  const { series, metricKeys, status, refreshMetrics } = useJobSystemMetrics(job.id, pollInterval);
 
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
 
@@ -121,11 +122,6 @@ export default function JobSystemMetricsGraph({ job, defaultCollapsed = true }: 
       })),
     };
   }, [chartData, activeKeys]);
-
-  // Don't render anything if no system metrics are being logged
-  if (!hasMetrics && status === 'success') {
-    return null;
-  }
 
   return (
     <div className="bg-gray-900 rounded-xl shadow-lg overflow-hidden border border-gray-800 flex flex-col">

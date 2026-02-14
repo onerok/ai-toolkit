@@ -87,7 +87,8 @@ function displayNameForKey(key: string) {
 }
 
 export default function JobLossGraph({ job }: Props) {
-  const { series, lossKeys, status, refreshLoss } = useJobLossLog(job.id, 2000);
+  const pollInterval = job.status === 'running' ? 2000 : null;
+  const { series, lossKeys, status, refreshLoss } = useJobLossLog(job.id, pollInterval);
 
   // Controls
   const [useLogScale, setUseLogScale] = useState(false);
