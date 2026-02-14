@@ -1,9 +1,9 @@
-# Phase 5: Activation Offloading to CPU
+# Phase 6: Activation Offloading to CPU
 
 **Impact:** Reduces VRAM by offloading activations instead of recomputing
 **Risk:** Medium — requires checkpoint integration
 **Effort:** 1-2 weeks
-**Dependencies:** Phase 2 (ring allocator), Phase 4 (conductor)
+**Dependencies:** Phase 2 (ring allocator), Phase 5 (conductor)
 
 ---
 
@@ -47,7 +47,7 @@ Before implementation, preserve these invariants:
    - Do not add a separate custom autograd checkpoint stack.
    - The same wrapped layer execution order must drive both layer offload and activation offload.
 
-2. **Activation offload requires the same checkpoint assumptions as Phase 4.**
+2. **Activation offload requires the same checkpoint assumptions as Phase 5.**
    - `call_index -> layer_index` mapping must be exact for every wrapped call.
    - Reentrant checkpoint mode is required for the `torch.is_grad_enabled()` transition heuristic used by conductor logic.
 

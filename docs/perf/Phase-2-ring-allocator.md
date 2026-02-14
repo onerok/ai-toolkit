@@ -531,7 +531,7 @@ class MemoryManager:
 
         Note:
             CPU-side allocator is NOT implemented here. CPU pinned memory for
-            offloaded weights is handled separately in Phase 4 (Offload Conductor).
+            offloaded weights is handled separately in Phase 5 (Offload Conductor).
         """
         from .manager_modules import _get_device_state
 
@@ -685,7 +685,7 @@ memory_management:
 ```
 
 **Note:** `ring_allocator_cpu_fraction` is NOT implemented in Phase 2. CPU-side pinned
-memory pooling is deferred to Phase 4 (Offload Conductor) where it can be coordinated
+memory pooling is deferred to Phase 5 (Offload Conductor) where it can be coordinated
 with the 3-stream transfer architecture.
 
 ---

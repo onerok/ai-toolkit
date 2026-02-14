@@ -102,7 +102,7 @@ This is **not** a one-time baseline capture—it's the test harness you'll use t
 | `slowdown_ratio` | post_save / pre_save time | Phase 1 |
 | `num_alloc_retries` | CUDA allocator pressure | Phase 2 |
 | `fragmentation_ratio` | Reserved vs allocated | Phase 2 |
-| `pcie_transfer_mb` | CPU↔GPU data movement | Phase 4, 5 |
+| `pcie_transfer_mb` | CPU↔GPU data movement | Phase 5, 6 |
 
 ### Workflow Per Phase
 
@@ -212,9 +212,10 @@ Comparison script flags regressions if:
 | 1 (VRAM Leak) | ✅ `phase1-before.json` | ✅ Done | ✅ `phase1-fixed.json` |
 | 2 (Ring Buffer) | ⬜ | ⬜ | ⬜ |
 | 3 (Fused Backward) | ⬜ | ⬜ | ⬜ |
-| 4 (Conductor) | ⬜ | ⬜ | ⬜ |
-| 5 (Activation) | ⬜ | ⬜ | ⬜ |
-| 6 (Accelerate) | ⬜ | ⬜ | ⬜ |
+| 4 (Arch-Agnostic) | ⬜ | ⬜ | ⬜ |
+| 5 (Conductor) | ⬜ | ⬜ | ⬜ |
+| 6 (Activation) | ⬜ | ⬜ | ⬜ |
+| 7 (Accelerate) | ⬜ | ⬜ | ⬜ |
 
 ---
 
@@ -226,9 +227,10 @@ Comparison script flags regressions if:
 | **1** | [VRAM Leak Fix](perf/Phase-1-vram-leak-fix.md) ✅ | Critical | Low | 1-2 days | Phase 0 |
 | **2** | [Ring Buffer Allocator](perf/Phase-2-ring-allocator.md) | High | Low-Med | 3-4 days | Phase 1 |
 | **3** | [Fused Backward](perf/Phase-3-fused-backward.md) | High | Medium | 3-5 days | Phase 1 |
-| **4** | [Offload Conductor](perf/Phase-4-offload-conductor.md) | High | Medium | 1-2 weeks | Phase 2, 3 |
-| **5** | [Activation Offload](perf/Phase-5-activation-offload.md) | Medium | Medium | 1-2 weeks | Phase 4 |
-| **6** | [Accelerate Bypass](perf/Phase-6-accelerate-bypass.md) | Low | Low | 1-2 days | None |
+| **4** | [Architecture-Agnostic Training](perf/Phase-4-architecture-agnostic-training.md) | High | Medium | 3-5 days | Phase 3 |
+| **5** | [Offload Conductor](perf/Phase-5-offload-conductor.md) | High | Medium | 1-2 weeks | Phase 2, 4 |
+| **6** | [Activation Offload](perf/Phase-6-activation-offload.md) | Medium | Medium | 1-2 weeks | Phase 5 |
+| **7** | [Accelerate Bypass](perf/Phase-7-accelerate-bypass.md) | Low | Low | 1-2 days | None |
 
 ---
 
@@ -246,19 +248,23 @@ Phase 1 (VRAM leak fix) ✅
 Phase 2 (Ring buffer)        Phase 3 (Fused backward)
          │                           │
          ▼                           │
-Phase 4 (Conductor) ←────────────────┘
-         │                   (can run in parallel,
-         ▼                    merged at Phase 4)
-Phase 5 (Activation offload)
+Phase 4 (Architecture-agnostic training)
+         │
+         ▼
+Phase 5 (Conductor) ←────────────────────┘
+         │                    (Phase 2 + 4 converge here)
+         ▼
+Phase 6 (Activation offload)
 
 
-Phase 6 (Accelerate bypass) ← Independent (can run anytime)
+Phase 7 (Accelerate bypass) ← Independent (can run anytime)
 ```
 
 **Notes:**
 - Phases 2 and 3 can be implemented in parallel after Phase 1
-- Phase 4 integrates work from both Phase 2 (ring allocator) and Phase 3 (fused backward)
-- Phase 6 has no dependencies and can be done at any point
+- Phase 4 establishes cross-architecture capability gating before conductor rollout
+- Phase 5 integrates work from both Phase 2 (ring allocator) and Phase 4 (architecture gating)
+- Phase 7 has no dependencies and can be done at any point
 
 ---
 
@@ -290,20 +296,32 @@ Phase 6 (Accelerate bypass) ← Independent (can run anytime)
   - Immediate gradient release
 
 ### Weeks 4-5: Core Architecture
-- **Phase 4:** Coordinated offload conductor
+- **Phase 4:** Architecture-agnostic training contract and gating
+- Include handoff-required parity work:
+  - optimizer `step_parameter` support for common optimizers
+  - config-time compatibility guards for fused/offload
+  - stable-loss capability gating across model families
+- **Phase 5:** Coordinated offload conductor
   - 3-stream architecture
   - Pre-computed offload strategy
   - Overlapped compute/transfer
 
 ### Weeks 6-7: Advanced Features
-- **Phase 5:** Activation offloading
+- **Phase 6:** Activation offloading
   - CPU pinned memory for activations
   - Replace recompute with transfer
   - Custom checkpoint integration
 
-- **Phase 6:** Accelerate bypass
+- **Phase 7:** Accelerate bypass
   - Single-GPU optimization
   - Direct `loss.backward()` calls
+
+### Regression Track (Required)
+- Add LoRA-strength regression checks to all Phase 4-6 rollouts:
+  - control run with fused/conductor/layer_offloading/stable_loss all disabled
+  - one-knob-at-a-time re-enable sequence
+  - compare image strength at fixed LoRA weight and LoRA norm/delta stats
+  - if divergence is isolated to layer offloading, inspect `toolkit/memory_management/manager.py` and `toolkit/memory_management/manager_modules.py`
 
 ---
 
@@ -319,17 +337,20 @@ model:
   layer_offloading_transformer_percent: 1.0
   layer_offloading_text_encoder_percent: 1.0
 
-  # Phase 4: Coordinated offloading
+  # Phase 4: Architecture-agnostic gating
+  # use_arch_capability_gates: true
+
+  # Phase 5: Coordinated offloading
   # Proposed extension if conductor is added:
   # use_offload_conductor: false
   # layer_offload_fraction: 0.5
 
-  # Phase 5: Activation offloading
+  # Phase 6: Activation offloading
   # Proposed extension:
   # activation_offload: false
   # Requires: use_offload_conductor: true
 
-  # Phase 6: Accelerate bypass
+  # Phase 7: Accelerate bypass
   # Proposed extension:
   # bypass_accelerate: null  # null = auto-detect
 

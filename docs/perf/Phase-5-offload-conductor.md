@@ -1,9 +1,9 @@
-# Phase 4: Coordinated Layer Offload Conductor
+# Phase 5: Coordinated Layer Offload Conductor
 
 **Impact:** Reduces PCIe contention, enables overlapped compute/transfer
 **Risk:** Medium — core training path change
 **Effort:** 1-2 weeks
-**Dependencies:** Phase 2 (ring allocator), Phase 3 (fused backward)
+**Dependencies:** Phase 2 (ring allocator), Phase 4 (architecture-agnostic gating)
 
 ---
 

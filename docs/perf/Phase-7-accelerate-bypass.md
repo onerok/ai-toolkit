@@ -1,4 +1,4 @@
-# Phase 6: Accelerate Bypass for Single-GPU
+# Phase 7: Accelerate Bypass for Single-GPU
 
 **Impact:** Eliminates Accelerate dispatch overhead (~1-5% per step)
 **Risk:** Low — isolated to single-GPU path
