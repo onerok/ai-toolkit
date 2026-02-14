@@ -1,5 +1,10 @@
 # Handoff: Phase 4 Drift Status (2026-02-14)
 
+## Status Note
+- Historical snapshot from mid-day 2026-02-14.
+- Later same-day quantized offload-conductor stabilization and runtime-knob metadata details are in:
+  - `.agents/handoff/quantized-offload-conductor-stability-sweep-20260214.md`
+
 ## Summary
 - `layer_offloading` is no longer the outlier in ablation results for quantized Flux2 path.
 - Relative regression is fixed enough to proceed with the full performance plan.

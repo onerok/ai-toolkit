@@ -1,5 +1,11 @@
 # Phase 4 Handoff: Layer Offloading Drift (2026-02-14)
 
+## Status Note
+- Historical snapshot from earlier on 2026-02-14.
+- Later same-day updates refined this status in:
+  - `.agents/handoff/phase4-drift-status-20260214.md`
+  - `.agents/handoff/quantized-offload-conductor-stability-sweep-20260214.md`
+
 ## Source of Truth
 - `docs/perf.md`
 - `docs/perf/Phase-4-architecture-agnostic-training.md`
