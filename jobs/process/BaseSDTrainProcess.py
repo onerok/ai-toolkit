@@ -156,6 +156,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
         self.data_loader: Union[DataLoader, None] = None
         self.data_loader_reg: Union[DataLoader, None] = None
         self.trigger_word = self.get_conf('trigger_word', None)
+        self._runtime_adjustments: List[dict[str, Any]] = []
+        self._requested_runtime_knobs = {}
 
         self.guidance_config: Union[GuidanceConfig, None] = None
         guidance_config_raw = self.get_conf('guidance', None)
@@ -738,9 +740,74 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.accelerator.is_main_process:
             self.logger.start()
         self.validate_startup_compatibility()
+        self.write_runtime_knobs_metadata()
         self.prepare_accelerator()
         self.setup_fused_backward_manager()
         self.setup_offload_conductor()
+
+    @staticmethod
+    def _runtime_model_knob_snapshot(model_cfg) -> dict[str, Any]:
+        keys = [
+            "arch",
+            "quantize",
+            "quantize_te",
+            "qtype",
+            "use_offload_conductor",
+            "layer_offloading",
+            "layer_offloading_transformer_percent",
+            "layer_offloading_text_encoder_percent",
+            "low_vram",
+        ]
+        out: dict[str, Any] = {}
+        for key in keys:
+            out[key] = getattr(model_cfg, key, None)
+        return out
+
+    @staticmethod
+    def _runtime_train_knob_snapshot(train_cfg) -> dict[str, Any]:
+        keys = [
+            "fused_back_pass",
+            "stable_loss_enabled",
+            "gradient_checkpointing",
+            "optimizer",
+            "batch_size",
+        ]
+        out: dict[str, Any] = {}
+        for key in keys:
+            out[key] = getattr(train_cfg, key, None)
+        return out
+
+    def _capture_requested_runtime_knobs(self, requested_model_cfg) -> None:
+        self._requested_runtime_knobs = {
+            "model": self._runtime_model_knob_snapshot(requested_model_cfg),
+            "train": self._runtime_train_knob_snapshot(self.train_config),
+        }
+
+    def _effective_runtime_knobs(self) -> dict[str, Any]:
+        model_cfg = self.model_config
+        if getattr(self, "sd", None) is not None and getattr(self.sd, "model_config", None) is not None:
+            model_cfg = self.sd.model_config
+        return {
+            "model": self._runtime_model_knob_snapshot(model_cfg),
+            "train": self._runtime_train_knob_snapshot(self.train_config),
+        }
+
+    def write_runtime_knobs_metadata(self) -> None:
+        if not self.accelerator.is_main_process:
+            return
+        path = os.path.join(self.save_root, "runtime_knobs.json")
+        model_adjustments = []
+        if getattr(self, "sd", None) is not None and hasattr(self.sd, "get_runtime_adjustments"):
+            model_adjustments = self.sd.get_runtime_adjustments()
+        payload = {
+            "requested": self._requested_runtime_knobs,
+            "effective": self._effective_runtime_knobs(),
+            "adjustments": list(self._runtime_adjustments) + list(model_adjustments),
+            "written_by": "BaseSDTrainProcess.write_runtime_knobs_metadata",
+        }
+        os.makedirs(self.save_root, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
 
     def _resolve_model_capability(self, name: str, default: Any) -> Any:
         if self.sd is None:
@@ -760,12 +827,31 @@ class BaseSDTrainProcess(BaseTrainProcess):
         return optimizer
 
     def _disable_feature_with_reason(self, feature_key: str, reason: str):
+        requested_value = None
+        effective_value = None
         if feature_key == "train.fused_back_pass":
+            requested_value = bool(self.train_config.fused_back_pass)
             self.train_config.fused_back_pass = False
+            effective_value = bool(self.train_config.fused_back_pass)
         elif feature_key == "model.use_offload_conductor":
+            requested_value = bool(self.model_config.use_offload_conductor)
             self.model_config.use_offload_conductor = False
+            if getattr(self, "sd", None) is not None and getattr(self.sd, "model_config", None) is not None:
+                self.sd.model_config.use_offload_conductor = False
+            effective_value = bool(self.model_config.use_offload_conductor)
         elif feature_key == "train.stable_loss_enabled":
+            requested_value = bool(self.train_config.stable_loss_enabled)
             self.train_config.stable_loss_enabled = False
+            effective_value = bool(self.train_config.stable_loss_enabled)
+        self._runtime_adjustments.append(
+            {
+                "feature": feature_key,
+                "requested": requested_value,
+                "effective": effective_value,
+                "reason": reason,
+                "source": "BaseSDTrainProcess.validate_startup_compatibility",
+            }
+        )
         print_acc(f"Warning: disabling {feature_key} ({reason}).")
 
     def validate_startup_compatibility(self):
@@ -1759,6 +1845,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         ### HOOK ###
         self.hook_before_model_load()
         model_config_to_load = copy.deepcopy(self.model_config)
+        self._capture_requested_runtime_knobs(model_config_to_load)
 
         if self.is_fine_tuning:
             # get the latest checkpoint

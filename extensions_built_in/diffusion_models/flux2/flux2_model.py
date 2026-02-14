@@ -137,12 +137,37 @@ class Flux2Model(BaseModel):
             and self.model_config.quantize
             and not self.model_config.use_offload_conductor
         ):
+            requested_layer_offloading = bool(self.model_config.layer_offloading)
+            requested_transformer_pct = float(self.model_config.layer_offloading_transformer_percent)
+            requested_text_encoder_pct = float(self.model_config.layer_offloading_text_encoder_percent)
             self.print_and_status_update(
                 "Warning: disabling layer offloading for quantized Flux2 without offload conductor."
             )
             self.model_config.layer_offloading = False
             self.model_config.layer_offloading_transformer_percent = 0.0
             self.model_config.layer_offloading_text_encoder_percent = 0.0
+            reason = "quantized Flux2 requires offload conductor for layer offloading"
+            self.record_runtime_adjustment(
+                "model.layer_offloading",
+                requested_layer_offloading,
+                bool(self.model_config.layer_offloading),
+                reason,
+                source="Flux2Model.load_model",
+            )
+            self.record_runtime_adjustment(
+                "model.layer_offloading_transformer_percent",
+                requested_transformer_pct,
+                float(self.model_config.layer_offloading_transformer_percent),
+                reason,
+                source="Flux2Model.load_model",
+            )
+            self.record_runtime_adjustment(
+                "model.layer_offloading_text_encoder_percent",
+                requested_text_encoder_pct,
+                float(self.model_config.layer_offloading_text_encoder_percent),
+                reason,
+                source="Flux2Model.load_model",
+            )
 
         # will be updated if we detect a existing checkpoint in training folder
         model_path = self.model_config.name_or_path

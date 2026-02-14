@@ -86,6 +86,23 @@ def _pick_checkpoint(job_dir: Path, step: int | None) -> Path:
 
 
 def _parse_knobs(job_dir: Path) -> dict[str, Any]:
+    runtime_path = job_dir / "runtime_knobs.json"
+    if runtime_path.exists():
+        try:
+            with open(runtime_path, "r", encoding="utf-8") as f:
+                runtime = json.load(f) or {}
+            effective = runtime.get("effective", {})
+            model = effective.get("model", {}) if isinstance(effective, dict) else {}
+            train = effective.get("train", {}) if isinstance(effective, dict) else {}
+            return {
+                "fused_back_pass": bool(train.get("fused_back_pass", False)),
+                "use_offload_conductor": bool(model.get("use_offload_conductor", False)),
+                "layer_offloading": bool(model.get("layer_offloading", False)),
+                "stable_loss_enabled": bool(train.get("stable_loss_enabled", False)),
+            }
+        except Exception:
+            pass
+
     cfg_path = job_dir / "config.yaml"
     if not cfg_path.exists():
         return {}
@@ -104,6 +121,20 @@ def _parse_knobs(job_dir: Path) -> dict[str, Any]:
         }
     except Exception:
         return {}
+
+
+def _parse_runtime_knobs(job_dir: Path) -> dict[str, Any]:
+    runtime_path = job_dir / "runtime_knobs.json"
+    if not runtime_path.exists():
+        return {}
+    try:
+        with open(runtime_path, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
 
 
 def _extract_thresholds_from_config(config_data: dict[str, Any]) -> dict[str, float]:
@@ -324,6 +355,7 @@ def main() -> int:
         "cases": {},
         "warnings": [],
         "failures": [],
+        "runtime_adjustments": {},
     }
 
     # Load control first.
@@ -355,9 +387,13 @@ def main() -> int:
         "job_dir": str(control_job),
         "checkpoint": str(control_ckpt),
         "knobs": _parse_knobs(control_job),
+        "runtime_knobs": _parse_runtime_knobs(control_job),
         "stats": control_stats.__dict__,
         "samples": _samples_info(control_job),
     }
+    control_adjustments = report["cases"]["control"]["runtime_knobs"].get("adjustments", [])
+    if control_adjustments:
+        report["runtime_adjustments"]["control"] = control_adjustments
     report["thresholds"] = {
         "warn_relative_delta": warn_relative_delta,
         "warn_control_repeat_relative_delta": warn_control_repeat_relative_delta,
@@ -381,11 +417,15 @@ def main() -> int:
             "job_dir": str(job_dir),
             "checkpoint": str(ckpt),
             "knobs": _parse_knobs(job_dir),
+            "runtime_knobs": _parse_runtime_knobs(job_dir),
             "stats": stats.__dict__,
             "delta_vs_control": delta,
             "samples": samples,
         }
         report["cases"][case_name] = case_report
+        adjustments = case_report["runtime_knobs"].get("adjustments", []) if case_report["runtime_knobs"] else []
+        if adjustments:
+            report["runtime_adjustments"][case_name] = adjustments
 
         rel = float(delta["relative_delta"])
         if rel > warn_relative_delta:
@@ -446,6 +486,23 @@ def main() -> int:
             print(f"  - {w}")
     else:
         print("Warnings: none")
+
+    if report["runtime_adjustments"]:
+        print("")
+        print("Runtime Adjustments:")
+        for case_name, adjustments in sorted(report["runtime_adjustments"].items()):
+            print(f"  - {case_name}:")
+            for adj in adjustments:
+                feature = str(adj.get("feature", "unknown"))
+                requested = adj.get("requested")
+                effective = adj.get("effective")
+                reason = str(adj.get("reason", ""))
+                source = str(adj.get("source", ""))
+                src_suffix = f" [{source}]" if source else ""
+                print(
+                    f"      {feature}: requested={requested!r}, effective={effective!r}, "
+                    f"reason={reason}{src_suffix}"
+                )
 
     if report["failures"]:
         print("")

@@ -194,6 +194,7 @@ class BaseModel:
         # when padding to make batch size work, which side padding to use, right or left
         # some llms need left side padding, others need right side
         self.te_padding_side = "right"
+        self._runtime_adjustments: list[dict[str, typing.Any]] = []
 
     # properties for old arch for backwards compatibility
     @property
@@ -303,6 +304,27 @@ class BaseModel:
 
     def get_offload_conductor_stats(self) -> Optional[dict[str, typing.Any]]:
         return None
+
+    def record_runtime_adjustment(
+        self,
+        feature: str,
+        requested: typing.Any,
+        effective: typing.Any,
+        reason: str,
+        source: str = "",
+    ) -> None:
+        self._runtime_adjustments.append(
+            {
+                "feature": feature,
+                "requested": requested,
+                "effective": effective,
+                "reason": reason,
+                "source": source or self.__class__.__name__,
+            }
+        )
+
+    def get_runtime_adjustments(self) -> list[dict[str, typing.Any]]:
+        return list(self._runtime_adjustments)
 
     # these must be implemented in child classes
     def load_model(self):
