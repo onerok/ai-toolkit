@@ -75,3 +75,7 @@ meta:
   name: "[name]"
   version: '1.0'
   description: "Performance benchmark config - minimal settings for fast iteration"
+
+ablation_analyzer:
+  warn_relative_delta: 0.25
+  warn_control_repeat_relative_delta: 0.08

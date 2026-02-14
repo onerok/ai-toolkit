@@ -105,6 +105,13 @@ def _apply_case_flags(
         return
     if case_name == "layer_offloading":
         model["layer_offloading"] = True
+        arch = str(model.get("arch", "")).lower()
+        if arch.startswith("flux2") and bool(model.get("quantize", False)):
+            # Quantized Flux2 layer offloading currently routes through conductor and can be unstable.
+            # Force this case onto the plain memory-manager offloading path so it is active and train-valid.
+            model["quantize"] = False
+            model["quantize_te"] = False
+            model["use_offload_conductor"] = False
         return
     if case_name == "offload_conductor":
         model["use_offload_conductor"] = True
@@ -120,13 +127,38 @@ def _apply_case_flags(
     raise ValueError(f"Unknown case '{case_name}'")
 
 
+def _warn_if_case_will_auto_disable(process: dict[str, Any], case_name: str) -> None:
+    if case_name != "layer_offloading":
+        return
+    model = _ensure_dict(process, "model")
+    arch = str(model.get("arch", "")).lower()
+    quantize = bool(model.get("quantize", False))
+    use_offload_conductor = bool(model.get("use_offload_conductor", False))
+    if arch.startswith("flux2") and not quantize:
+        print(
+            "Info: layer_offloading case disables Flux2 quantization so layer_offloading remains "
+            "active on the plain memory-manager path."
+        )
+    elif arch.startswith("flux2") and quantize and not use_offload_conductor:
+        print(
+            "Warning: layer_offloading case uses quantized Flux2 without offload conductor; "
+            "runtime model startup will disable layer_offloading for compatibility. "
+            "This case will effectively track control unless config/model settings change."
+        )
+
+
 def _run_training(config_path: Path) -> int:
     cmd = ["uv", "run", "python", "run.py", str(config_path)]
     result = subprocess.run(cmd, cwd=PROJECT_ROOT)
     return result.returncode
 
 
-def _run_analyzer(run_root: Path, fail_relative_delta: float | None, control_repeat_warn: float | None) -> int:
+def _run_analyzer(
+    run_root: Path,
+    warn_relative_delta: float | None,
+    fail_relative_delta: float | None,
+    control_repeat_warn: float | None,
+) -> int:
     cmd = [
         "uv",
         "run",
@@ -135,6 +167,8 @@ def _run_analyzer(run_root: Path, fail_relative_delta: float | None, control_rep
         "--run-root",
         str(run_root),
     ]
+    if warn_relative_delta is not None:
+        cmd.extend(["--warn-relative-delta", str(warn_relative_delta)])
     if fail_relative_delta is not None:
         cmd.extend(["--fail-relative-delta", str(fail_relative_delta)])
     if control_repeat_warn is not None:
@@ -195,6 +229,12 @@ def main() -> int:
         help="Run scripts/analyze_phase4_ablations.py automatically after all runs complete.",
     )
     parser.add_argument(
+        "--analyze-warn-relative-delta",
+        type=float,
+        default=None,
+        help="Pass-through threshold for analyzer --warn-relative-delta.",
+    )
+    parser.add_argument(
         "--analyze-fail-relative-delta",
         type=float,
         default=None,
@@ -203,7 +243,7 @@ def main() -> int:
     parser.add_argument(
         "--analyze-warn-control-repeat-relative-delta",
         type=float,
-        default=0.05,
+        default=None,
         help="Pass-through threshold for analyzer control-repeat sanity warning.",
     )
     args = parser.parse_args()
@@ -246,6 +286,7 @@ def main() -> int:
         _set_run_name_and_output(cfg, case_name, case_run_dir)
         _apply_reproducibility_defaults(process, seed=args.seed, force_optimizer=args.optimizer)
         _apply_case_flags(process, case_name=case_name, stable_loss_path=args.stable_loss_path)
+        _warn_if_case_will_auto_disable(process, case_name=case_name)
 
         out_cfg = configs_dir / f"{case_name}.yaml"
         with open(out_cfg, "w", encoding="utf-8") as f:
@@ -273,6 +314,7 @@ def main() -> int:
         print("\nRunning analyzer...")
         rc = _run_analyzer(
             run_root=run_root,
+            warn_relative_delta=args.analyze_warn_relative_delta,
             fail_relative_delta=args.analyze_fail_relative_delta,
             control_repeat_warn=args.analyze_warn_control_repeat_relative_delta,
         )

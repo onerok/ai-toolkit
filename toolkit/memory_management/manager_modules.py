@@ -6,7 +6,11 @@ https://github.com/lodestone-rock/RamTorch/blob/main/ramtorch/modules/linear.py
 I simply modified it to work with a memory management model and with AI Toolkit's models
 """
 
-from typing import TYPE_CHECKING, Optional, Tuple
+import os
+import json
+import atexit
+from collections import deque
+from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -20,6 +24,62 @@ if TYPE_CHECKING:
 
 # --- Per-device global state registry ---
 _DEVICE_STATE = {}
+_MM_TRACE_ENV = os.environ.get("AITK_LAYER_OFFLOAD_TRACE", "").strip().lower()
+_MM_TRACE_ENABLED = _MM_TRACE_ENV in {"1", "true", "yes", "on"}
+try:
+    _MM_TRACE_MAX_EVENTS = max(64, int(os.environ.get("AITK_LAYER_OFFLOAD_TRACE_MAX_EVENTS", "4096")))
+except ValueError:
+    _MM_TRACE_MAX_EVENTS = 4096
+_MM_TRACE_EVENTS: deque[dict[str, Any]] = deque(maxlen=_MM_TRACE_MAX_EVENTS)
+_MM_TRACE_PATH = os.environ.get("AITK_LAYER_OFFLOAD_TRACE_PATH", "").strip()
+
+
+def _is_trace_enabled() -> bool:
+    return _MM_TRACE_ENABLED
+
+
+def _module_debug_name(module: Optional[nn.Module]) -> str:
+    if module is None:
+        return "unknown"
+    return str(
+        getattr(module, "_memory_manager_debug_name", None)
+        or getattr(module, "_memory_manager_debug_index", None)
+        or module.__class__.__name__
+    )
+
+
+def record_mm_trace(event: str, module: Optional[nn.Module] = None, **fields: Any) -> None:
+    if not _is_trace_enabled():
+        return
+    row: dict[str, Any] = {"event": event, "module": _module_debug_name(module)}
+    if module is not None and hasattr(module, "_memory_manager_debug_index"):
+        row["module_index"] = int(getattr(module, "_memory_manager_debug_index"))
+    row.update(fields)
+    _MM_TRACE_EVENTS.append(row)
+
+
+def get_mm_trace_events(clear: bool = False) -> list[dict[str, Any]]:
+    events = list(_MM_TRACE_EVENTS)
+    if clear:
+        _MM_TRACE_EVENTS.clear()
+    return events
+
+
+def _flush_mm_trace_events() -> None:
+    if not (_MM_TRACE_PATH and _MM_TRACE_EVENTS):
+        return
+    try:
+        with open(_MM_TRACE_PATH, "a", encoding="utf-8") as handle:
+            for row in _MM_TRACE_EVENTS:
+                handle.write(json.dumps(row, sort_keys=True))
+                handle.write("\n")
+    except Exception:
+        # Keep teardown safe even if debugging output fails.
+        return
+
+
+if _is_trace_enabled() and _MM_TRACE_PATH:
+    atexit.register(_flush_mm_trace_events)
 
 
 def _get_device_state(device: torch.device):
@@ -165,7 +225,7 @@ def _move_params_to_cpu_and_pin(module: nn.Module):
 
 class _BouncingLinearFn(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, weight_cpu, bias_cpu, device: torch.device):
+    def forward(ctx, x, weight_cpu, bias_cpu, device: torch.device, layer_debug: str = ""):
         # choose compute dtype to match activations
         target_dtype = (
             x.dtype
@@ -207,6 +267,7 @@ class _BouncingLinearFn(torch.autograd.Function):
             )
             ctx.save_for_backward(x.to("cpu"), weight_cpu, bias_cpu)
             ctx.device = torch.device("cpu")
+            ctx.layer_debug = layer_debug
             return out.to(x.device)
 
         ts = state["transfer_stream"]
@@ -230,6 +291,18 @@ class _BouncingLinearFn(torch.autograd.Function):
             state["forward_clk"] ^= 1
             ev_tx_f.record()
 
+        if _is_trace_enabled():
+            record_mm_trace(
+                "linear_fwd_stage",
+                module=None,
+                layer=str(layer_debug),
+                slot=int(idx),
+                weight_grad_present=bool(getattr(weight_cpu, "grad", None) is not None),
+                bias_grad_present=bool(getattr(bias_cpu, "grad", None) is not None) if bias_cpu is not None else False,
+                weight_requires_grad=bool(getattr(weight_cpu, "requires_grad", False)),
+                bias_requires_grad=bool(getattr(bias_cpu, "requires_grad", False)) if bias_cpu is not None else False,
+            )
+
         torch.cuda.current_stream().wait_event(ev_tx_f)
         ev_cu_s.record()
         out = F.linear(x, w_bufs[idx], b_bufs[idx])
@@ -238,6 +311,7 @@ class _BouncingLinearFn(torch.autograd.Function):
         ctx.save_for_backward(x, weight_cpu, bias_cpu)
         ctx.device = device
         ctx.target_dtype = target_dtype
+        ctx.layer_debug = layer_debug
         return out
 
     @staticmethod
@@ -245,6 +319,7 @@ class _BouncingLinearFn(torch.autograd.Function):
         x, weight_cpu, bias_cpu = ctx.saved_tensors
         device = ctx.device
         target_dtype = getattr(ctx, "target_dtype", grad_out.dtype)
+        layer_debug = getattr(ctx, "layer_debug", "")
 
         if device.type != "cuda":
             go_cpu = grad_out.to("cpu")
@@ -272,7 +347,7 @@ class _BouncingLinearFn(torch.autograd.Function):
                 if (bias_cpu is not None and getattr(bias_cpu, "requires_grad", False))
                 else None
             )
-            return grad_input.to(grad_out.device), grad_weight, grad_bias, None
+            return grad_input.to(grad_out.device), grad_weight, grad_bias, None, None
 
         state = _get_device_state(device)
         transfer_stream = state["transfer_stream"]
@@ -309,6 +384,16 @@ class _BouncingLinearFn(torch.autograd.Function):
             w_bwd_buffers[idx] = _materialize_for_bwd(weight_cpu)
             state["backward_clk"] ^= 1
             ev_tx_b.record()
+
+        if _is_trace_enabled():
+            record_mm_trace(
+                "linear_bwd_stage",
+                module=None,
+                layer=str(layer_debug),
+                slot=int(idx),
+                weight_grad_present=bool(getattr(weight_cpu, "grad", None) is not None),
+                bias_grad_present=bool(getattr(bias_cpu, "grad", None) is not None) if bias_cpu is not None else False,
+            )
 
         torch.cuda.current_stream().wait_event(ev_tx_b)
         ev_cu_b_start.record()
@@ -355,7 +440,7 @@ class _BouncingLinearFn(torch.autograd.Function):
                 grad_bias = b_grad_buffers[idx].to("cpu", non_blocking=False)
             state["transfer_weight_backward_finished_event"].record()
 
-        return grad_input.to(dtype=grad_out.dtype), grad_weight, grad_bias, None
+        return grad_input.to(dtype=grad_out.dtype), grad_weight, grad_bias, None, None
 
 
 class _BouncingConv2dFn(torch.autograd.Function):
@@ -370,6 +455,7 @@ class _BouncingConv2dFn(torch.autograd.Function):
         padding: Tuple[int, int],
         dilation: Tuple[int, int],
         groups: int,
+        layer_debug: str = "",
     ):
         target_dtype = (
             x.dtype
@@ -413,7 +499,7 @@ class _BouncingConv2dFn(torch.autograd.Function):
                 groups,
             )
             ctx.save_for_backward(x.to("cpu"), weight_cpu, bias_cpu)
-            ctx.meta = ("cpu", stride, padding, dilation, groups, target_dtype)
+            ctx.meta = ("cpu", stride, padding, dilation, groups, target_dtype, layer_debug)
             return out.to(x.device)
 
         ts = state["transfer_stream"]
@@ -437,19 +523,31 @@ class _BouncingConv2dFn(torch.autograd.Function):
             state["forward_clk"] ^= 1
             ev_tx_f.record()
 
+        if _is_trace_enabled():
+            record_mm_trace(
+                "conv_fwd_stage",
+                module=None,
+                layer=str(layer_debug),
+                slot=int(idx),
+                weight_grad_present=bool(getattr(weight_cpu, "grad", None) is not None),
+                bias_grad_present=bool(getattr(bias_cpu, "grad", None) is not None) if bias_cpu is not None else False,
+                weight_requires_grad=bool(getattr(weight_cpu, "requires_grad", False)),
+                bias_requires_grad=bool(getattr(bias_cpu, "requires_grad", False)) if bias_cpu is not None else False,
+            )
+
         torch.cuda.current_stream().wait_event(ev_tx_f)
         ev_cu_s.record()
         out = F.conv2d(x, w_bufs[idx], b_bufs[idx], stride, padding, dilation, groups)
         ev_cu_f_slots[idx].record()
 
         ctx.save_for_backward(x, weight_cpu, bias_cpu)
-        ctx.meta = (device, stride, padding, dilation, groups, target_dtype)
+        ctx.meta = (device, stride, padding, dilation, groups, target_dtype, layer_debug)
         return out
 
     @staticmethod
     def backward(ctx, grad_out):
         x, weight_cpu, bias_cpu = ctx.saved_tensors
-        device, stride, padding, dilation, groups, target_dtype = ctx.meta
+        device, stride, padding, dilation, groups, target_dtype, layer_debug = ctx.meta
 
         if (
             isinstance(device, torch.device) and device.type != "cuda"
@@ -506,6 +604,7 @@ class _BouncingConv2dFn(torch.autograd.Function):
                 None,
                 None,
                 None,
+                None,
             )
 
         state = _get_device_state(device)
@@ -544,6 +643,16 @@ class _BouncingConv2dFn(torch.autograd.Function):
             w_bwd_buffers[idx] = _materialize_for_bwd(weight_cpu)
             state["backward_clk"] ^= 1
             ev_tx_b.record()
+
+        if _is_trace_enabled():
+            record_mm_trace(
+                "conv_bwd_stage",
+                module=None,
+                layer=str(layer_debug),
+                slot=int(idx),
+                weight_grad_present=bool(getattr(weight_cpu, "grad", None) is not None),
+                bias_grad_present=bool(getattr(bias_cpu, "grad", None) is not None) if bias_cpu is not None else False,
+            )
 
         torch.cuda.current_stream().wait_event(ev_tx_b)
         ev_cu_b_start.record()
@@ -615,6 +724,7 @@ class _BouncingConv2dFn(torch.autograd.Function):
             None,
             None,
             None,
+            None,
         )
 
 
@@ -632,6 +742,7 @@ class BaseLayerMemoryManager:
         if hasattr(module, "_layer_memory_manager"):
             return
         module._layer_memory_manager = cls(module, manager)
+        record_mm_trace("layer_attach", module, cls=cls.__name__)
 
         # mark parameters as memory managed
         for param in module.parameters(recurse=False):
@@ -665,9 +776,10 @@ class LinearLayerMemoryManager(BaseLayerMemoryManager):
             weight_cpu = self.module.weight
             bias_cpu = getattr(self.module, "bias", None)
             device = self.manager.process_device
+            layer_debug = _module_debug_name(self.module)
 
             # NOTE: do NOT move params to device here; autograd fn streams & bounces them
-            return _BouncingLinearFn.apply(x, weight_cpu, bias_cpu, device)
+            return _BouncingLinearFn.apply(x, weight_cpu, bias_cpu, device, layer_debug)
 
         if hasattr(self.module, "ara_lora_ref"):
             self.module.ara_lora_ref().org_forward = _mm_forward
@@ -721,9 +833,10 @@ class ConvLayerMemoryManager(BaseLayerMemoryManager):
             weight_cpu = self.module.weight
             bias_cpu = getattr(self.module, "bias", None)
             device = self.manager.process_device
+            layer_debug = _module_debug_name(self.module)
 
             return _BouncingConv2dFn.apply(
-                x, weight_cpu, bias_cpu, device, stride, padding, dilation, groups
+                x, weight_cpu, bias_cpu, device, stride, padding, dilation, groups, layer_debug
             )
 
         if hasattr(self.module, "ara_lora_ref"):

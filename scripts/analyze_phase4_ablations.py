@@ -27,6 +27,8 @@ from safetensors.torch import load_file
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RUNS_ROOT = PROJECT_ROOT / "output" / "phase4_ablations"
 STEP_RE = re.compile(r"_(\d{9,})\.safetensors$")
+DEFAULT_WARN_RELATIVE_DELTA = 0.25
+DEFAULT_WARN_CONTROL_REPEAT_RELATIVE_DELTA = 0.05
 
 
 @dataclass
@@ -102,6 +104,64 @@ def _parse_knobs(job_dir: Path) -> dict[str, Any]:
         }
     except Exception:
         return {}
+
+
+def _extract_thresholds_from_config(config_data: dict[str, Any]) -> dict[str, float]:
+    key_aliases = {
+        "warn_relative_delta": ["warn_relative_delta", "warn_rel_delta"],
+        "warn_control_repeat_relative_delta": [
+            "warn_control_repeat_relative_delta",
+            "control_repeat_warn_relative_delta",
+            "warn_control_repeat",
+        ],
+        "fail_relative_delta": ["fail_relative_delta"],
+    }
+
+    candidates: list[dict[str, Any]] = []
+    top = config_data.get("ablation_analyzer")
+    if isinstance(top, dict):
+        candidates.append(top)
+
+    meta = config_data.get("meta")
+    if isinstance(meta, dict):
+        v = meta.get("ablation_analyzer")
+        if isinstance(v, dict):
+            candidates.append(v)
+
+    cfg = config_data.get("config")
+    if isinstance(cfg, dict):
+        v = cfg.get("ablation_analyzer")
+        if isinstance(v, dict):
+            candidates.append(v)
+        process = cfg.get("process")
+        if isinstance(process, list) and process and isinstance(process[0], dict):
+            pv = process[0].get("ablation_analyzer")
+            if isinstance(pv, dict):
+                candidates.append(pv)
+
+    resolved: dict[str, float] = {}
+    for candidate in candidates:
+        for canonical_key, aliases in key_aliases.items():
+            for key in aliases:
+                if key not in candidate:
+                    continue
+                try:
+                    resolved[canonical_key] = float(candidate[key])
+                except (TypeError, ValueError):
+                    pass
+                break
+    return resolved
+
+
+def _load_thresholds_from_job_config(job_dir: Path) -> dict[str, float]:
+    cfg_path = job_dir / "config.yaml"
+    if not cfg_path.exists():
+        return {}
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    if not isinstance(cfg, dict):
+        return {}
+    return _extract_thresholds_from_config(cfg)
 
 
 def _tensor_stats(state_dict: dict[str, torch.Tensor]) -> CheckpointStats:
@@ -219,13 +279,13 @@ def main() -> int:
     parser.add_argument(
         "--warn-relative-delta",
         type=float,
-        default=0.25,
+        default=None,
         help="Warn if relative delta vs control exceeds this threshold.",
     )
     parser.add_argument(
         "--warn-control-repeat-relative-delta",
         type=float,
-        default=0.05,
+        default=None,
         help="Warn if control_repeat drift vs control exceeds this threshold.",
     )
     parser.add_argument(
@@ -271,12 +331,38 @@ def main() -> int:
     control_ckpt = _pick_checkpoint(control_job, args.step)
     control_state = load_file(str(control_ckpt))
     control_stats = _tensor_stats(control_state)
+    config_thresholds = _load_thresholds_from_job_config(control_job)
+    warn_relative_delta = (
+        args.warn_relative_delta
+        if args.warn_relative_delta is not None
+        else config_thresholds.get("warn_relative_delta", DEFAULT_WARN_RELATIVE_DELTA)
+    )
+    warn_control_repeat_relative_delta = (
+        args.warn_control_repeat_relative_delta
+        if args.warn_control_repeat_relative_delta is not None
+        else config_thresholds.get(
+            "warn_control_repeat_relative_delta",
+            DEFAULT_WARN_CONTROL_REPEAT_RELATIVE_DELTA,
+        )
+    )
+    fail_relative_delta = (
+        args.fail_relative_delta
+        if args.fail_relative_delta is not None
+        else config_thresholds.get("fail_relative_delta")
+    )
+
     report["cases"]["control"] = {
         "job_dir": str(control_job),
         "checkpoint": str(control_ckpt),
         "knobs": _parse_knobs(control_job),
         "stats": control_stats.__dict__,
         "samples": _samples_info(control_job),
+    }
+    report["thresholds"] = {
+        "warn_relative_delta": warn_relative_delta,
+        "warn_control_repeat_relative_delta": warn_control_repeat_relative_delta,
+        "fail_relative_delta": fail_relative_delta,
+        "config_overrides": config_thresholds,
     }
 
     for case_dir in case_dirs:
@@ -302,17 +388,23 @@ def main() -> int:
         report["cases"][case_name] = case_report
 
         rel = float(delta["relative_delta"])
-        if rel > args.warn_relative_delta:
+        if rel > warn_relative_delta:
             report["warnings"].append(
-                f"{case_name}: relative_delta={rel:.4f} exceeds warn threshold {args.warn_relative_delta:.4f}"
+                f"{case_name}: relative_delta={rel:.4f} exceeds warn threshold {warn_relative_delta:.4f}"
             )
-        if args.fail_relative_delta is not None and rel > args.fail_relative_delta:
+        if fail_relative_delta is not None and rel > fail_relative_delta:
             report["failures"].append(
-                f"{case_name}: relative_delta={rel:.4f} exceeds fail threshold {args.fail_relative_delta:.4f}"
+                f"{case_name}: relative_delta={rel:.4f} exceeds fail threshold {fail_relative_delta:.4f}"
             )
 
     print(f"Run root: {run_root}")
     print(f"Control checkpoint: {control_ckpt.name}")
+    print(
+        "Thresholds: "
+        f"warn_relative_delta={warn_relative_delta:.4f}, "
+        f"warn_control_repeat_relative_delta={warn_control_repeat_relative_delta:.4f}, "
+        f"fail_relative_delta={'none' if fail_relative_delta is None else f'{fail_relative_delta:.4f}'}"
+    )
     print("")
     print(
         "Case                          RelDelta   CosSim   LoraCos  DeltaL2      TotalL2      LoraA_L2     LoraB_L2     SharedKeys"
@@ -342,9 +434,9 @@ def main() -> int:
         print(
             f"Control-repeat sanity: relative_delta={repeat_rel:.4f}, cosine={repeat_cos:.4f}"
         )
-        if repeat_rel > args.warn_control_repeat_relative_delta:
+        if repeat_rel > warn_control_repeat_relative_delta:
             report["warnings"].append(
-                f"control_repeat drift={repeat_rel:.4f} exceeds threshold {args.warn_control_repeat_relative_delta:.4f}"
+                f"control_repeat drift={repeat_rel:.4f} exceeds threshold {warn_control_repeat_relative_delta:.4f}"
             )
         print("")
 

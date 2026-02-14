@@ -137,6 +137,11 @@ class Flux2(nn.Module):
         self._offload_single_indices: list[int] = []
         self._checkpoint_use_reentrant = False
 
+    def _offload_backward_start_hook(self, grad: Tensor) -> Tensor:
+        if self.offload_conductor is not None and self.offload_conductor.is_active:
+            self.offload_conductor.start_backward()
+        return grad
+
     @property
     def device(self):
         return next(self.parameters()).device
@@ -164,9 +169,10 @@ class Flux2(nn.Module):
         self._offload_double_indices = [conductor.add_layer(block) for block in self.double_blocks]
         self._offload_single_indices = [conductor.add_layer(block) for block in self.single_blocks]
         self.offload_conductor = conductor
-
-        # Backward/forward transition detection in conductor uses reentrant behavior.
-        self._checkpoint_use_reentrant = True
+        # Reentrant checkpointing can drop grads when inputs do not require grad
+        # (common with frozen/quantized base weights + LoRA). Keep non-reentrant
+        # and switch conductor direction via an output grad hook.
+        self._checkpoint_use_reentrant = False
 
     def activate_offload_conductor(self) -> bool:
         if self.offload_conductor is None:
@@ -305,6 +311,8 @@ class Flux2(nn.Module):
         img = img[:, num_txt_tokens:, ...]
 
         img = self.final_layer(img, vec)
+        if self.offload_conductor is not None and self.offload_conductor.is_active and self.training and torch.is_grad_enabled():
+            img.register_hook(self._offload_backward_start_hook)
         return img
 
 

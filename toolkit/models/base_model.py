@@ -301,6 +301,9 @@ class BaseModel:
         model_unwrapped.deactivate_offload_conductor()
         return True
 
+    def get_offload_conductor_stats(self) -> Optional[dict[str, typing.Any]]:
+        return None
+
     # these must be implemented in child classes
     def load_model(self):
         # override this in child classes

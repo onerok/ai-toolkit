@@ -17,6 +17,7 @@ import torch
 from torch import nn
 
 from .ring_allocator import RingBufferAllocator
+from .manager_modules import _is_quantized_tensor
 
 
 def get_layer_bytes(layer: nn.Module) -> int:
@@ -24,6 +25,17 @@ def get_layer_bytes(layer: nn.Module) -> int:
     for param in layer.parameters():
         total += param.numel() * param.element_size()
     return total
+
+
+def _requires_direct_tensor_move(t: torch.Tensor) -> bool:
+    if _is_quantized_tensor(t):
+        return True
+    module_name = getattr(t.__class__, "__module__", "")
+    if isinstance(module_name, str) and module_name.startswith("optimum.quanto."):
+        return True
+    if hasattr(t, "qtype"):
+        return True
+    return False
 
 
 @dataclass
@@ -355,11 +367,21 @@ class OffloadConductor:
             raise RuntimeError("OffloadConductor allocators are not initialized.")
         layer = self.layers[layer_index]
         for param in layer.parameters():
-            gpu_tensor = self.gpu_allocator.allocate_like(param.data, layer_index)
-            if gpu_tensor is None:
-                gpu_tensor = param.data.to(self.train_device, non_blocking=self.async_transfer)
+            src_tensor = param.data
+            if _requires_direct_tensor_move(src_tensor):
+                # Quantized wrappers often override copy_ dispatch and may not support
+                # allocator-backed copy semantics; move directly across devices.
+                # Keep this synchronous for wrapper tensor correctness.
+                gpu_tensor = src_tensor.to(self.train_device, non_blocking=False)
             else:
-                gpu_tensor.copy_(param.data, non_blocking=self.async_transfer)
+                gpu_tensor = self.gpu_allocator.allocate_like(src_tensor, layer_index)
+                if gpu_tensor is None:
+                    gpu_tensor = src_tensor.to(self.train_device, non_blocking=self.async_transfer)
+                else:
+                    try:
+                        gpu_tensor.copy_(src_tensor, non_blocking=self.async_transfer)
+                    except TypeError:
+                        gpu_tensor.copy_(src_tensor)
             param.data = gpu_tensor
         self.cpu_allocator.deallocate_layer(layer_index)
         self.layer_device_map[layer_index] = self.train_device
@@ -370,11 +392,21 @@ class OffloadConductor:
             raise RuntimeError("OffloadConductor allocators are not initialized.")
         layer = self.layers[layer_index]
         for param in layer.parameters():
-            cpu_tensor = self.cpu_allocator.allocate_like(param.data, layer_index)
-            if cpu_tensor is None:
-                cpu_tensor = param.data.to(self.temp_device, non_blocking=self.async_transfer)
+            src_tensor = param.data
+            if _requires_direct_tensor_move(src_tensor):
+                # Quantized wrappers often override copy_ dispatch and may not support
+                # allocator-backed copy semantics; move directly across devices.
+                # Keep this synchronous for wrapper tensor correctness.
+                cpu_tensor = src_tensor.to(self.temp_device, non_blocking=False)
             else:
-                cpu_tensor.copy_(param.data, non_blocking=self.async_transfer)
+                cpu_tensor = self.cpu_allocator.allocate_like(src_tensor, layer_index)
+                if cpu_tensor is None:
+                    cpu_tensor = src_tensor.to(self.temp_device, non_blocking=self.async_transfer)
+                else:
+                    try:
+                        cpu_tensor.copy_(src_tensor, non_blocking=self.async_transfer)
+                    except TypeError:
+                        cpu_tensor.copy_(src_tensor)
             param.data = cpu_tensor
         self.gpu_allocator.deallocate_layer(layer_index)
         self.layer_device_map[layer_index] = self.temp_device

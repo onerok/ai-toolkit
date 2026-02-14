@@ -7,6 +7,7 @@ from .manager_modules import (
     ConvLayerMemoryManager,
     LinearLayerMemoryManager,
     _is_quantized_tensor,
+    record_mm_trace,
 )
 from .ring_allocator import RingBufferAllocator
 
@@ -167,6 +168,7 @@ class MemoryManager:
             return
 
         module._memory_manager = cls(module, device)
+        module._memory_manager._managed_layer_count = 0
         if use_ring_allocator and device.type == "cuda":
             model_size_bytes = cls._estimate_model_size_bytes(module)
             module._memory_manager.initialize_ring_allocators(
@@ -185,9 +187,22 @@ class MemoryManager:
 
         # count ignore modules as processed
         modules_processed = [x for x in ignore_modules]
+
+        def _mark_managed_layer(layer: torch.nn.Module, layer_path: str, layer_type: str):
+            manager_inst = module._memory_manager
+            index = int(getattr(manager_inst, "_managed_layer_count", 0))
+            setattr(layer, "_memory_manager_debug_index", index)
+            setattr(layer, "_memory_manager_debug_name", layer_path)
+            manager_inst._managed_layer_count = index + 1
+            record_mm_trace("manager_attach", layer, path=layer_path, layer_type=layer_type)
+
+        def _record_skip(layer: torch.nn.Module, layer_path: str, reason: str, layer_type: str):
+            record_mm_trace("manager_skip", layer, path=layer_path, reason=reason, layer_type=layer_type)
+
         # attach to all modules
         for name, sub_module in module.named_modules():
             for child_name, child_module in sub_module.named_modules():
+                layer_path = ".".join(part for part in (name, child_name) if part) or child_module.__class__.__name__
                 if (
                     child_module.__class__.__name__ in LINEAR_MODULES
                     and child_module not in modules_processed
@@ -196,6 +211,7 @@ class MemoryManager:
                     if _is_quantized_tensor(weight):
                         # Keep native quantized kernels/dispatch for numerical parity.
                         module._memory_manager.unmanaged_modules.append(child_module)
+                        _record_skip(child_module, layer_path, "quantized", "linear")
                         modules_processed.append(child_module)
                         continue
                     skip = False
@@ -205,7 +221,9 @@ class MemoryManager:
                             skip = True
                     if skip:
                         module._memory_manager.unmanaged_modules.append(child_module)
+                        _record_skip(child_module, layer_path, "offload_percent_skip", "linear")
                     else:
+                        _mark_managed_layer(child_module, layer_path, "linear")
                         # linear
                         LinearLayerMemoryManager.attach(
                             child_module, module._memory_manager
@@ -229,6 +247,7 @@ class MemoryManager:
                     if _is_quantized_tensor(weight):
                         # Keep native quantized kernels/dispatch for numerical parity.
                         module._memory_manager.unmanaged_modules.append(child_module)
+                        _record_skip(child_module, layer_path, "quantized", "conv")
                         modules_processed.append(child_module)
                         continue
                     skip = False
@@ -238,7 +257,9 @@ class MemoryManager:
                             skip = True
                     if skip:
                         module._memory_manager.unmanaged_modules.append(child_module)
+                        _record_skip(child_module, layer_path, "offload_percent_skip", "conv")
                     else:
+                        _mark_managed_layer(child_module, layer_path, "conv")
                         # conv
                         ConvLayerMemoryManager.attach(
                             child_module, module._memory_manager
@@ -261,5 +282,6 @@ class MemoryManager:
                 ):
                     # unmanaged
                     module._memory_manager.unmanaged_modules.append(child_module)
+                    _record_skip(child_module, layer_path, "unmanaged_class", "other")
                 else:
                     continue
