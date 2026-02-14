@@ -1,0 +1,240 @@
+{
+  "tag": "phase3-fused-after",
+  "commit": "74b8179",
+  "timestamp": "2026-02-13T20:55:21.095914",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "vram_gb": 31.84234619140625,
+    "cuda_version": "12.8",
+    "driver_version": "591.59",
+    "torch_version": "2.10.0+cu128",
+    "python_version": "3.11.11"
+  },
+  "config": {
+    "config_path": null,
+    "steps": 20,
+    "resolution": 256,
+    "save_at": 10,
+    "dataset_path": null
+  },
+  "metrics": {
+    "peak_vram_mb": 20202.0,
+    "pre_save_vram_mb": 20202.0,
+    "save_peak_vram_mb": 20202.0,
+    "post_save_vram_mb": 20202.0,
+    "leaked_mb": 0.0,
+    "avg_step_time_s": 0.6412649199512088,
+    "pre_save_step_time_s": 0.6501809849025448,
+    "post_save_step_time_s": 0.6351900796661438,
+    "slowdown_ratio": 0.976943488683158,
+    "save_duration_s": 0.7160534858703613,
+    "num_alloc_retries": 0,
+    "fragmentation_ratio": 0.004281049927066571,
+    "output_validation_passed": true,
+    "output_validation_message": "valid LoRA safetensors (224 tensors, 112 paired modules)",
+    "validated_output_path": "output/perf_test/perf_benchmark/perf_benchmark.safetensors",
+    "generation_validation_passed": false,
+    "generation_validation_message": "",
+    "generation_validation_image_path": "",
+    "generation_clipscore": 0.0,
+    "generation_clipscore_threshold": 0.0,
+    "generation_clipscore_model": "",
+    "total_duration_s": 35.78572344779968,
+    "step_count": 20
+  },
+  "raw": {
+    "step_times": [
+      {
+        "step": 0,
+        "duration_s": 1.0255781480009318,
+        "is_save_step": false,
+        "is_post_save": false
+      },
+      {
+        "step": 1,
+        "duration_s": 0.6164421919966117,
+        "is_save_step": false,
+        "is_post_save": false
+      },
+      {
+        "step": 2,
+        "duration_s": 0.6075494950055145,
+        "is_save_step": false,
+        "is_post_save": false
+      },
+      {
+        "step": 3,
+        "duration_s": 0.6060285550047411,
+        "is_save_step": false,
+        "is_post_save": false
+      },
+      {
+        "step": 4,
+        "duration_s": 0.6074791640057811,
+        "is_save_step": false,
+        "is_post_save": false
+      },
+      {
+        "step": 5,
+        "duration_s": 0.6071511109985295,
+        "is_save_step": false,
+        "is_post_save": false
+      },
+      {
+        "step": 6,
+        "duration_s": 0.6073501339997165,
+        "is_save_step": false,
+        "is_post_save": false
+      },
+      {
+        "step": 7,
+        "duration_s": 0.6070433410059195,
+        "is_save_step": false,
+        "is_post_save": false
+      },
+      {
+        "step": 8,
+        "duration_s": 0.6075840730045456,
+        "is_save_step": false,
+        "is_post_save": false
+      },
+      {
+        "step": 9,
+        "duration_s": 0.6096036360031576,
+        "is_save_step": false,
+        "is_post_save": false
+      },
+      {
+        "step": 10,
+        "duration_s": 0.6067778330034344,
+        "is_save_step": true,
+        "is_post_save": false
+      },
+      {
+        "step": 11,
+        "duration_s": 0.8598924830002943,
+        "is_save_step": false,
+        "is_post_save": true
+      },
+      {
+        "step": 12,
+        "duration_s": 0.6084192600028473,
+        "is_save_step": false,
+        "is_post_save": true
+      },
+      {
+        "step": 13,
+        "duration_s": 0.6069882500014501,
+        "is_save_step": false,
+        "is_post_save": true
+      },
+      {
+        "step": 14,
+        "duration_s": 0.6062110339989886,
+        "is_save_step": false,
+        "is_post_save": true
+      },
+      {
+        "step": 15,
+        "duration_s": 0.6072889569986728,
+        "is_save_step": false,
+        "is_post_save": true
+      },
+      {
+        "step": 16,
+        "duration_s": 0.6065711839983123,
+        "is_save_step": false,
+        "is_post_save": true
+      },
+      {
+        "step": 17,
+        "duration_s": 0.6068673819972901,
+        "is_save_step": false,
+        "is_post_save": true
+      },
+      {
+        "step": 18,
+        "duration_s": 0.6064978049980709,
+        "is_save_step": false,
+        "is_post_save": true
+      },
+      {
+        "step": 19,
+        "duration_s": 0.6079743619993678,
+        "is_save_step": false,
+        "is_post_save": true
+      }
+    ],
+    "memory_snapshots": [
+      {
+        "timestamp": 1771037721.2387843,
+        "label": "pre_training",
+        "allocated_mb": 0.0,
+        "reserved_mb": 0.0,
+        "max_allocated_mb": 0.0,
+        "num_alloc_retries": 0
+      },
+      {
+        "timestamp": 1771037749.3629382,
+        "label": "pre_save",
+        "allocated_mb": 17321.50048828125,
+        "reserved_mb": 20202.0,
+        "max_allocated_mb": 19846.1318359375,
+        "num_alloc_retries": 0
+      },
+      {
+        "timestamp": 1771037750.0794659,
+        "label": "during_save_peak",
+        "allocated_mb": 17322.06298828125,
+        "reserved_mb": 20202.0,
+        "max_allocated_mb": 17322.06298828125,
+        "num_alloc_retries": 0
+      },
+      {
+        "timestamp": 1771037750.079659,
+        "label": "post_save",
+        "allocated_mb": 17321.50048828125,
+        "reserved_mb": 17396.0,
+        "max_allocated_mb": 17322.06298828125,
+        "num_alloc_retries": 0
+      },
+      {
+        "timestamp": 1771037751.1828654,
+        "label": "post_save_step_1",
+        "allocated_mb": 17321.50341796875,
+        "reserved_mb": 20202.0,
+        "max_allocated_mb": 19846.134765625,
+        "num_alloc_retries": 0
+      },
+      {
+        "timestamp": 1771037751.7923622,
+        "label": "post_save_step_2",
+        "allocated_mb": 17321.50634765625,
+        "reserved_mb": 20202.0,
+        "max_allocated_mb": 19846.1376953125,
+        "num_alloc_retries": 0
+      },
+      {
+        "timestamp": 1771037751.7926023,
+        "label": "post_save_settled",
+        "allocated_mb": 17321.50634765625,
+        "reserved_mb": 20202.0,
+        "max_allocated_mb": 19846.1376953125,
+        "num_alloc_retries": 0
+      },
+      {
+        "timestamp": 1771037757.0247698,
+        "label": "post_training",
+        "allocated_mb": 17321.52685546875,
+        "reserved_mb": 17396.0,
+        "max_allocated_mb": 19846.158203125,
+        "num_alloc_retries": 0
+      }
+    ]
+  },
+  "git": {
+    "commit": "74b8179",
+    "branch": "feat/system-metrics-graph",
+    "dirty": true
+  }
+}

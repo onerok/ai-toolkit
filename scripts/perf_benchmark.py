@@ -516,6 +516,8 @@ def _validate_generated_image(path: Path) -> tuple[bool, str]:
 
 
 def _compute_clipscore(image_path: Path, prompt: str, model_id: str) -> tuple[bool, float, str]:
+    model = None
+    processor = None
     try:
         from transformers import CLIPModel, CLIPProcessor
     except Exception as exc:
@@ -538,6 +540,12 @@ def _compute_clipscore(image_path: Path, prompt: str, model_id: str) -> tuple[bo
         return True, score, ""
     except Exception as exc:
         return False, 0.0, f"failed to compute CLIPScore: {exc}"
+    finally:
+        del model
+        del processor
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def _run_generation_smoke_validation(
@@ -791,6 +799,7 @@ def run_training_benchmark(
 
         # Create and run job
         job = get_job(config)
+        job_cleaned = False
         teardowns = _instrument_training_processes(job, result.metrics, save_at)
 
         print("  Starting training...")
@@ -820,6 +829,16 @@ def run_training_benchmark(
                 print(f"  Validated file: {latest_output}")
 
                 if validate_generation:
+                    # Release training resources before generation validation to avoid
+                    # carrying training VRAM footprint into generation.
+                    job.cleanup()
+                    job_cleaned = True
+                    del job
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.ipc_collect()
+
                     ok, msg, image_path, clipscore = _run_generation_smoke_validation(
                         config,
                         latest_output,
@@ -842,7 +861,8 @@ def run_training_benchmark(
         if steps > 0 and not result.metrics.step_times:
             result.metrics.avg_step_time_s = result.metrics.total_duration_s / steps
 
-        job.cleanup()
+        if not job_cleaned:
+            job.cleanup()
 
     except Exception as e:
         print(f"Training benchmark failed: {e}")
