@@ -740,10 +740,10 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.accelerator.is_main_process:
             self.logger.start()
         self.validate_startup_compatibility()
-        self.write_runtime_knobs_metadata()
         self.prepare_accelerator()
         self.setup_fused_backward_manager()
         self.setup_offload_conductor()
+        self.write_runtime_knobs_metadata()
 
     @staticmethod
     def _runtime_model_knob_snapshot(model_cfg) -> dict[str, Any]:
@@ -792,6 +792,33 @@ class BaseSDTrainProcess(BaseTrainProcess):
             "train": self._runtime_train_knob_snapshot(self.train_config),
         }
 
+    def _runtime_activation_states(self) -> dict[str, bool]:
+        model_cfg = self.model_config
+        if getattr(self, "sd", None) is not None and getattr(self.sd, "model_config", None) is not None:
+            model_cfg = self.sd.model_config
+
+        layer_offloading_enabled = bool(getattr(model_cfg, "layer_offloading", False))
+        transformer_pct = float(getattr(model_cfg, "layer_offloading_transformer_percent", 0.0) or 0.0)
+        text_encoder_pct = float(getattr(model_cfg, "layer_offloading_text_encoder_percent", 0.0) or 0.0)
+        layer_offloading_active = layer_offloading_enabled and (transformer_pct > 0.0 or text_encoder_pct > 0.0)
+
+        states = {
+            "offload_conductor_active": bool(self.offload_conductor_enabled),
+            "layer_offloading_active": bool(layer_offloading_active),
+        }
+
+        if getattr(self, "sd", None) is not None and hasattr(self.sd, "get_runtime_feature_states"):
+            try:
+                model_states = self.sd.get_runtime_feature_states()
+            except Exception:
+                model_states = None
+            if isinstance(model_states, dict):
+                for key in ("offload_conductor_active", "layer_offloading_active"):
+                    if key in model_states:
+                        states[key] = bool(model_states[key])
+
+        return states
+
     def write_runtime_knobs_metadata(self) -> None:
         if not self.accelerator.is_main_process:
             return
@@ -802,6 +829,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         payload = {
             "requested": self._requested_runtime_knobs,
             "effective": self._effective_runtime_knobs(),
+            "active": self._runtime_activation_states(),
             "adjustments": list(self._runtime_adjustments) + list(model_adjustments),
             "written_by": "BaseSDTrainProcess.write_runtime_knobs_metadata",
         }

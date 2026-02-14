@@ -305,6 +305,17 @@ class BaseModel:
     def get_offload_conductor_stats(self) -> Optional[dict[str, typing.Any]]:
         return None
 
+    def get_runtime_feature_states(self) -> dict[str, bool]:
+        layer_offloading_enabled = bool(getattr(self.model_config, "layer_offloading", False))
+        transformer_pct = float(getattr(self.model_config, "layer_offloading_transformer_percent", 0.0) or 0.0)
+        text_encoder_pct = float(getattr(self.model_config, "layer_offloading_text_encoder_percent", 0.0) or 0.0)
+        return {
+            "offload_conductor_active": False,
+            "layer_offloading_active": bool(
+                layer_offloading_enabled and (transformer_pct > 0.0 or text_encoder_pct > 0.0)
+            ),
+        }
+
     def record_runtime_adjustment(
         self,
         feature: str,

@@ -5,6 +5,7 @@
 - Added ablation analyzer support for per-config thresholds.
 - Added runtime guardrail metadata so analyzer can distinguish requested vs config-effective knobs and surface runtime adjustments.
 - Ran a longer 3-seed stability sweep on quantized + conductor config.
+- Added explicit runtime activation telemetry for conductor/layer-offloading and analyzer enforcement for expected-but-inactive conductor runs.
 
 ## Key Code Changes
 
@@ -35,14 +36,26 @@
   - Writes per-run `runtime_knobs.json` with:
     - `requested`
     - `effective` (config snapshot at metadata write time)
+    - `active` (post-setup runtime activation state)
     - `adjustments` (auto-disables and reasons)
+  - Metadata write now occurs after offload-conductor setup so activation fields reflect post-setup state.
 - `extensions_built_in/diffusion_models/flux2/flux2_model.py`
   - Records runtime adjustments when Flux2 auto-disables layer offloading.
+- `toolkit/models/base_model.py`
+  - Added `get_runtime_feature_states()` default contract to expose model runtime activation state.
 - `scripts/analyze_phase4_ablations.py`
   - Reads `runtime_knobs.json`.
-  - Uses effective knobs when available.
+  - Uses runtime `active` fields when available (fallback to effective knobs).
   - Prints `Runtime Adjustments` section when adjustments exist.
-  - Note: this is not full runtime activation telemetry for all features; it reflects config-effective state plus recorded adjustments.
+  - Fails when offload conductor is expected by effective config but inactive at runtime.
+  - Warns when conductor is expected but activation telemetry is missing.
+
+### 5) Regression tests added
+- `testing/test_offload_conductor_integration.py`
+  - Verifies `runtime_knobs.json` includes `active.offload_conductor_active` and `active.layer_offloading_active`.
+- `testing/test_phase4_ablation_analyzer_activation.py`
+  - Verifies analyzer failure for expected-but-inactive conductor.
+  - Verifies analyzer warning for missing activation telemetry.
 
 ### 4) Reference implementation alignment note
 - `tmp/OneTrainer` still uses reentrant checkpointing for offload-checkpoint wrappers (`use_reentrant=True`) plus a dummy-grad workaround in wrapper output handling.
@@ -82,11 +95,20 @@
 ## Current State
 - Quantized + offload conductor path is currently stable for tested short/medium training windows.
 - Guardrails now reduce misinterpretation by recording requested/effective config snapshots plus runtime adjustments.
-- Runtime metadata currently does not guarantee post-setup activation state for every feature (for example, conductor activation success/failure is logged but not yet emitted as a dedicated runtime knob field).
+- Runtime metadata now includes explicit post-setup activation fields for conductor/layer-offloading.
 - Ablation warnings are now calibrated via config thresholds rather than hardcoded defaults only.
+- Analyzer now hard-fails expected-but-inactive conductor runs, preventing ambiguous Phase 5 perf data.
 
 ## Next Step
-1. Move to Phase 5/6 quantized-path performance tuning:
-   - offload fraction policy,
-   - transfer overlap behavior,
+1. Start Phase 5 quantized-path performance tuning from this telemetry baseline:
+   - offload fraction policy sweep,
+   - transfer overlap behavior validation,
    - memory/throughput profiling under quantized conductor path.
+
+## Phase 5 Kickoff Checklist
+- [ ] Confirm `runtime_knobs.json` includes `active.offload_conductor_active=true` for control and conductor-enabled ablation cases.
+- [ ] Run ablation analyzer and verify no expected-but-inactive conductor failures.
+- [ ] Define initial offload-fraction sweep points (for example: `0.25`, `0.50`, `0.75`).
+- [ ] Capture baseline memory + throughput metrics for each sweep point using the same dataset/seed set.
+- [ ] Validate transfer overlap behavior (stream timeline or equivalent profiling evidence) before expanding sweep breadth.
+- [ ] Record pass/fail criteria for selecting the Phase 5 default policy.

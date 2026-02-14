@@ -1,6 +1,7 @@
 import os
 import sys
 import importlib
+import json
 from types import SimpleNamespace
 
 import torch
@@ -91,3 +92,45 @@ def test_offload_conductor_keeps_deferred_current_layer():
 
     stats = conductor.get_stats()
     assert stats["deferred_requeues"] >= 1
+
+
+def test_write_runtime_knobs_metadata_includes_active_states(tmp_path):
+    process = BaseSDTrainProcess.__new__(BaseSDTrainProcess)
+    process.accelerator = SimpleNamespace(is_main_process=True)
+    process.save_root = str(tmp_path)
+    process._requested_runtime_knobs = {
+        "model": {"use_offload_conductor": True, "layer_offloading": True},
+        "train": {"fused_back_pass": False},
+    }
+    process._runtime_adjustments = []
+    process.offload_conductor_enabled = True
+    process.model_config = SimpleNamespace(
+        arch="flux",
+        quantize=True,
+        quantize_te=False,
+        qtype="int8",
+        use_offload_conductor=True,
+        layer_offloading=True,
+        layer_offloading_transformer_percent=0.5,
+        layer_offloading_text_encoder_percent=0.0,
+        low_vram=False,
+    )
+    process.train_config = SimpleNamespace(
+        fused_back_pass=False,
+        stable_loss_enabled=False,
+        gradient_checkpointing=True,
+        optimizer="adamw",
+        batch_size=1,
+    )
+    process.sd = SimpleNamespace(
+        model_config=process.model_config,
+        get_runtime_adjustments=lambda: [],
+    )
+
+    process.write_runtime_knobs_metadata()
+
+    output_path = tmp_path / "runtime_knobs.json"
+    assert output_path.exists()
+    data = json.loads(output_path.read_text(encoding="utf-8"))
+    assert data["active"]["offload_conductor_active"] is True
+    assert data["active"]["layer_offloading_active"] is True

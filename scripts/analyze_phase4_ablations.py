@@ -94,10 +94,16 @@ def _parse_knobs(job_dir: Path) -> dict[str, Any]:
             effective = runtime.get("effective", {})
             model = effective.get("model", {}) if isinstance(effective, dict) else {}
             train = effective.get("train", {}) if isinstance(effective, dict) else {}
+            active = runtime.get("active", {})
+            active_model = active if isinstance(active, dict) else {}
             return {
                 "fused_back_pass": bool(train.get("fused_back_pass", False)),
-                "use_offload_conductor": bool(model.get("use_offload_conductor", False)),
-                "layer_offloading": bool(model.get("layer_offloading", False)),
+                "use_offload_conductor": bool(
+                    active_model.get("offload_conductor_active", model.get("use_offload_conductor", False))
+                ),
+                "layer_offloading": bool(
+                    active_model.get("layer_offloading_active", model.get("layer_offloading", False))
+                ),
                 "stable_loss_enabled": bool(train.get("stable_loss_enabled", False)),
             }
         except Exception:
@@ -135,6 +141,41 @@ def _parse_runtime_knobs(job_dir: Path) -> dict[str, Any]:
     except Exception:
         pass
     return {}
+
+
+def _check_expected_feature_activation(
+    case_name: str,
+    runtime_knobs: dict[str, Any],
+    failures: list[str],
+    warnings: list[str],
+) -> None:
+    if not isinstance(runtime_knobs, dict) or not runtime_knobs:
+        return
+
+    effective = runtime_knobs.get("effective", {})
+    if not isinstance(effective, dict):
+        return
+    model = effective.get("model", {})
+    if not isinstance(model, dict):
+        return
+
+    active = runtime_knobs.get("active", {})
+    if not isinstance(active, dict):
+        active = {}
+
+    expected_conductor = bool(model.get("use_offload_conductor", False))
+    conductor_active = active.get("offload_conductor_active")
+    if expected_conductor:
+        if conductor_active is None:
+            warnings.append(
+                f"{case_name}: expected offload conductor, but runtime activation telemetry is missing "
+                "(runtime_knobs.active.offload_conductor_active)."
+            )
+        elif not bool(conductor_active):
+            failures.append(
+                f"{case_name}: expected offload conductor active from effective config, "
+                "but runtime_knobs.active.offload_conductor_active=false"
+            )
 
 
 def _extract_thresholds_from_config(config_data: dict[str, Any]) -> dict[str, float]:
@@ -394,6 +435,12 @@ def main() -> int:
     control_adjustments = report["cases"]["control"]["runtime_knobs"].get("adjustments", [])
     if control_adjustments:
         report["runtime_adjustments"]["control"] = control_adjustments
+    _check_expected_feature_activation(
+        "control",
+        report["cases"]["control"]["runtime_knobs"],
+        report["failures"],
+        report["warnings"],
+    )
     report["thresholds"] = {
         "warn_relative_delta": warn_relative_delta,
         "warn_control_repeat_relative_delta": warn_control_repeat_relative_delta,
@@ -426,6 +473,12 @@ def main() -> int:
         adjustments = case_report["runtime_knobs"].get("adjustments", []) if case_report["runtime_knobs"] else []
         if adjustments:
             report["runtime_adjustments"][case_name] = adjustments
+        _check_expected_feature_activation(
+            case_name,
+            case_report["runtime_knobs"],
+            report["failures"],
+            report["warnings"],
+        )
 
         rel = float(delta["relative_delta"])
         if rel > warn_relative_delta:
