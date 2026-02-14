@@ -31,6 +31,7 @@ from toolkit.data_loader import get_dataloader_from_datasets, trigger_dataloader
 from toolkit.data_transfer_object.data_loader import FileItemDTO, DataLoaderBatchDTO
 from toolkit.ema import ExponentialMovingAverage
 from toolkit.embedding import Embedding
+from toolkit.fused_backward import FusedBackwardManager
 from toolkit.image_utils import show_tensors, show_latents, reduce_contrast
 from toolkit.ip_adapter import IPAdapter
 from toolkit.lora_special import LoRASpecialNetwork
@@ -149,6 +150,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         self.logging_config = LoggingConfig(**self.get_conf('logging', {}))
         self.logger = create_logger(self.logging_config, config, self.save_root)
         self.optimizer: torch.optim.Optimizer = None
+        self.fused_backward_manager: Optional[FusedBackwardManager] = None
         self.lr_scheduler = None
         self.data_loader: Union[DataLoader, None] = None
         self.data_loader_reg: Union[DataLoader, None] = None
@@ -735,6 +737,67 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.accelerator.is_main_process:
             self.logger.start()
         self.prepare_accelerator()
+        self.setup_fused_backward_manager()
+
+    def iter_trainable_parameters(self):
+        optimizer = self.optimizer
+        if optimizer is not None and hasattr(optimizer, "optimizer"):
+            optimizer = optimizer.optimizer
+        if optimizer is not None and hasattr(optimizer, "param_groups"):
+            for group in optimizer.param_groups:
+                for param in group.get('params', []):
+                    if isinstance(param, torch.nn.Parameter):
+                        yield param
+            return
+        for group in self.params:
+            if isinstance(group, dict):
+                for param in group.get('params', []):
+                    if isinstance(param, torch.nn.Parameter):
+                        yield param
+            elif isinstance(group, torch.nn.Parameter):
+                yield group
+
+    def setup_fused_backward_manager(self):
+        self.fused_backward_manager = FusedBackwardManager(
+            optimizer=self.optimizer,
+            enabled=self.train_config.fused_back_pass,
+        )
+
+        if not self.train_config.fused_back_pass:
+            return
+
+        if self.train_config.gradient_accumulation > 1 or self.train_config.gradient_accumulation_steps > 1:
+            print_acc(
+                "Warning: train.fused_back_pass has limited VRAM benefit when using gradient accumulation > 1."
+            )
+
+        if self.train_config.max_grad_norm is not None and self.train_config.max_grad_norm > 0 and \
+                self.train_config.optimizer.lower() != 'adafactor':
+            self.fused_backward_manager.disable("incompatible with global gradient clipping semantics")
+            print_acc(
+                "Warning: disabling train.fused_back_pass because global gradient clipping semantics "
+                "cannot be preserved in fused mode."
+            )
+            return
+
+        if hasattr(self.accelerator, "scaler") and self.accelerator.scaler is not None:
+            self.fused_backward_manager.disable("AMP GradScaler path is not enabled for fused stepping")
+            print_acc("Warning: disabling train.fused_back_pass when GradScaler is active.")
+            return
+
+        if not self.fused_backward_manager.enable():
+            print_acc(
+                f"Warning: disabling train.fused_back_pass ({self.fused_backward_manager.disable_reason})."
+            )
+            return
+
+        self.fused_backward_manager.attach(self.iter_trainable_parameters())
+        print_acc("Fused backward pass enabled.")
+
+    def teardown_fused_backward_manager(self):
+        if self.fused_backward_manager is not None:
+            self.fused_backward_manager.detach()
+            self.fused_backward_manager = None
         
     def sample_step_hook(self, img_num, total_imgs):
         pass
@@ -2222,8 +2285,19 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 if "CUDA out of memory" in str(e):
                     did_oom = True
                 else:
+                    self.teardown_fused_backward_manager()
                     raise  # not an OOM; surface real errors
+            except Exception:
+                self.teardown_fused_backward_manager()
+                raise
             if did_oom:
+                if self.fused_backward_manager is not None and self.fused_backward_manager.enabled and \
+                        self.fused_backward_manager.did_fused_step_this_update():
+                    self.teardown_fused_backward_manager()
+                    raise RuntimeError(
+                        "OOM occurred after fused backward already stepped one or more parameters; "
+                        "aborting to avoid partial-update corruption."
+                    )
                 self.num_consecutive_oom += 1
                 if self.num_consecutive_oom > 3:
                     raise RuntimeError("OOM during training step 3 times in a row, aborting training")
@@ -2411,6 +2485,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
             self.save()
             self.logger.finish()
         self.accelerator.end_training()
+        self.teardown_fused_backward_manager()
 
         if self.accelerator.is_main_process:
             # push to hub

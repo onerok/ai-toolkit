@@ -430,6 +430,7 @@ class TrainConfig:
         if self.gradient_accumulation > 1:
             if self.gradient_accumulation_steps != 1:
                 raise ValueError("gradient_accumulation and gradient_accumulation_steps are mutually exclusive")
+        self.fused_back_pass: bool = kwargs.get('fused_back_pass', False)
 
         # short long captions will double your batch size. This only works when a dataset is
         # prepared with a json caption file that has both short and long captions in it. It will

@@ -290,6 +290,16 @@ class SDTrainer(BaseSDTrainProcess):
         if count > 0:
             return total_loss / count
         return None
+
+    def _backward(self, loss: torch.Tensor, allow_fused_step: bool = False):
+        manager = self.fused_backward_manager
+        if manager is not None and manager.enabled:
+            manager.set_backward_mode(allow_fused_step)
+        try:
+            self.accelerator.backward(loss)
+        finally:
+            if manager is not None and manager.enabled:
+                manager.set_backward_mode(False)
     
     def cache_sample_prompts(self):
         if self.train_config.disable_sampling:
@@ -1140,6 +1150,7 @@ class SDTrainer(BaseSDTrainProcess):
             batch: 'DataLoaderBatchDTO',
             noise: torch.Tensor,
             unconditional_embeds: Optional[PromptEmbeds] = None,
+            allow_fused_step: bool = False,
             **kwargs
     ):
         dtype = get_torch_dtype(self.train_config.dtype)
@@ -1241,7 +1252,7 @@ class SDTrainer(BaseSDTrainProcess):
         loss = loss.mean()
         if loss.item() > 1e3:
             pass
-        self.accelerator.backward(loss)
+        self._backward(loss, allow_fused_step=allow_fused_step)
         return pure_loss
 
 
@@ -1414,7 +1425,7 @@ class SDTrainer(BaseSDTrainProcess):
         )
     
 
-    def train_single_accumulation(self, batch: DataLoaderBatchDTO):
+    def train_single_accumulation(self, batch: DataLoaderBatchDTO, allow_fused_step: bool = False):
         with torch.no_grad():
             self.timer.start('preprocess_batch')
             if isinstance(self.adapter, CustomAdapter):
@@ -2131,6 +2142,7 @@ class SDTrainer(BaseSDTrainProcess):
                             noise = next_sample_noise
                             timesteps = stepped_timesteps
                 # do a prior pred if we have an unconditional image, we will swap out the giadance later
+                fused_step_consumed = False
                 if batch.unconditional_latents is not None or self.do_guided_loss:
                     # do guided loss
                     loss = self.get_guided_loss(
@@ -2159,7 +2171,9 @@ class SDTrainer(BaseSDTrainProcess):
                         noise=noise,
                         unconditional_embeds=unconditional_embeds,
                         prior_pred=prior_pred,
+                        allow_fused_step=allow_fused_step,
                     )
+                    fused_step_consumed = allow_fused_step
                 else:
                     with self.timer('predict_unet'):
                         noise_pred = self.predict_noise(
@@ -2194,7 +2208,7 @@ class SDTrainer(BaseSDTrainProcess):
                     
                     if self.train_config.diff_output_preservation or self.train_config.blank_prompt_preservation:
                         # send the loss backwards otherwise checkpointing will fail
-                        self.accelerator.backward(loss)
+                        self._backward(loss, allow_fused_step=False)
                         normal_loss = loss.detach() # dont send backward again
                         
                         with torch.no_grad():
@@ -2217,7 +2231,8 @@ class SDTrainer(BaseSDTrainProcess):
                         )
                         multiplier = self.train_config.diff_output_preservation_multiplier if self.train_config.diff_output_preservation else self.train_config.blank_prompt_preservation_multiplier
                         preservation_loss = torch.nn.functional.mse_loss(preservation_pred, prior_pred) * multiplier
-                        self.accelerator.backward(preservation_loss)
+                        self._backward(preservation_loss, allow_fused_step=allow_fused_step)
+                        fused_step_consumed = allow_fused_step
 
                         loss = normal_loss + preservation_loss
                         loss = loss.clone().detach()
@@ -2241,7 +2256,7 @@ class SDTrainer(BaseSDTrainProcess):
                     # if self.is_bfloat:
                     # loss.backward()
                     # else:
-                    self.accelerator.backward(loss)
+                    self._backward(loss, allow_fused_step=allow_fused_step and not fused_step_consumed)
 
         return loss.detach()
         # flush()
@@ -2252,8 +2267,14 @@ class SDTrainer(BaseSDTrainProcess):
         else:
             batch_list = [batch]
         total_loss = None
+        is_update_step = not self.is_grad_accumulation_step
+        fused_manager = self.fused_backward_manager
+        fused_enabled = fused_manager is not None and fused_manager.enabled
+        if fused_enabled:
+            fused_manager.set_update_step(is_update_step)
         self.optimizer.zero_grad()
-        for batch in batch_list:
+        for batch_idx, batch in enumerate(batch_list):
+            allow_fused_step = is_update_step and batch_idx == (len(batch_list) - 1)
             if self.sd.is_multistage:
                 # handle multistage switching
                 if self.steps_this_boundary >= self.train_config.switch_boundary_every or self.current_boundary_index not in self.sd.trainable_multistage_boundaries:
@@ -2266,7 +2287,7 @@ class SDTrainer(BaseSDTrainProcess):
                         if self.current_boundary_index in self.sd.trainable_multistage_boundaries:
                             # if this boundary is trainable, we can stop looking
                             break
-            loss = self.train_single_accumulation(batch)
+            loss = self.train_single_accumulation(batch, allow_fused_step=allow_fused_step)
             self.steps_this_boundary += 1
             if total_loss is None:
                 total_loss = loss
@@ -2275,10 +2296,10 @@ class SDTrainer(BaseSDTrainProcess):
             if len(batch_list) > 1 and self.model_config.low_vram:
                 torch.cuda.empty_cache()
 
-
+        did_fused_step = fused_enabled and is_update_step and fused_manager.did_fused_step_this_update()
         if not self.is_grad_accumulation_step:
             # fix this for multi params
-            if self.train_config.optimizer != 'adafactor':
+            if self.train_config.optimizer != 'adafactor' and not did_fused_step:
                 if isinstance(self.params[0], dict):
                     for i in range(len(self.params)):
                         self.accelerator.clip_grad_norm_(self.params[i]['params'], self.train_config.max_grad_norm)
@@ -2287,7 +2308,8 @@ class SDTrainer(BaseSDTrainProcess):
 
             # only step if we are not accumulating
             with self.timer('optimizer_step'):
-                self.optimizer.step()
+                if not did_fused_step:
+                    self.optimizer.step()
 
                 self.optimizer.zero_grad(set_to_none=True)
                 if self.adapter and isinstance(self.adapter, CustomAdapter):
@@ -2296,6 +2318,8 @@ class SDTrainer(BaseSDTrainProcess):
             if self.ema is not None:
                 with self.timer('ema_update'):
                     self.ema.update()
+            if fused_enabled:
+                fused_manager.mark_update_complete()
         else:
             # gradient accumulation. Just a place for breakpoint
             pass
