@@ -1,6 +1,9 @@
-import torch
-from .manager_modules import LinearLayerMemoryManager, ConvLayerMemoryManager
 import random
+
+import torch
+
+from .manager_modules import ConvLayerMemoryManager, LinearLayerMemoryManager
+from .ring_allocator import RingBufferAllocator
 
 LINEAR_MODULES = [
     "Linear",
@@ -65,19 +68,69 @@ class MemoryManager:
             return self.module._mm_to(dtype=dtype)
         return self.module
 
+    @staticmethod
+    def _estimate_model_size_bytes(module: torch.nn.Module) -> int:
+        total = 0
+        for p in module.parameters():
+            total += p.numel() * p.element_size()
+        return total
+
+    def initialize_ring_allocators(
+        self,
+        model_size_bytes: int,
+        device: torch.device,
+        gpu_fraction: float = 0.25,
+    ) -> None:
+        from .manager_modules import _get_device_state
+
+        if device.type != "cuda":
+            return
+
+        state = _get_device_state(device)
+        target_bytes = max(1, int(model_size_bytes * gpu_fraction))
+        existing = state.get("ring_allocator_gpu")
+        if existing is not None and getattr(existing, "total_capacity", 0) >= target_bytes:
+            state["use_ring_allocator"] = True
+            return
+
+        if existing is not None:
+            existing.deallocate_cache()
+
+        state["ring_allocator_gpu"] = RingBufferAllocator(device, target_bytes=target_bytes)
+        state["use_ring_allocator"] = True
+
+    def disable_ring_allocators(self, device: torch.device) -> None:
+        from .manager_modules import _get_device_state
+
+        state = _get_device_state(device)
+        allocator = state.get("ring_allocator_gpu")
+        if allocator is not None:
+            allocator.deallocate_cache()
+            state["ring_allocator_gpu"] = None
+        state["use_ring_allocator"] = False
+
     @classmethod
     def attach(
-        cls, 
-        module: torch.nn.Module, 
-        device: torch.device, 
+        cls,
+        module: torch.nn.Module,
+        device: torch.device,
         offload_percent: float = 1.0,
-        ignore_modules: list[torch.nn.Module] = []
+        ignore_modules: list[torch.nn.Module] = [],
+        use_ring_allocator: bool = True,
+        ring_allocator_gpu_fraction: float = 0.25,
     ):
         if hasattr(module, "_memory_manager"):
             # already attached
             return
 
         module._memory_manager = cls(module, device)
+        if use_ring_allocator and device.type == "cuda":
+            model_size_bytes = cls._estimate_model_size_bytes(module)
+            module._memory_manager.initialize_ring_allocators(
+                model_size_bytes=model_size_bytes,
+                device=device,
+                gpu_fraction=ring_allocator_gpu_fraction,
+            )
 
         # override the to method to handle memory management
         module._mm_to = module.to
@@ -86,7 +139,7 @@ class MemoryManager:
         # add ignore modules to unmanaged list
         for im in ignore_modules:
             module._memory_manager.unmanaged_modules.append(im)
-            
+
         # count ignore modules as processed
         modules_processed = [x for x in ignore_modules]
         # attach to all modules
@@ -113,8 +166,10 @@ class MemoryManager:
                             ara = child_module.ara_lora_ref()
                             if ara not in modules_processed:
                                 MemoryManager.attach(
-                                    ara, 
+                                    ara,
                                     device,
+                                    use_ring_allocator=use_ring_allocator,
+                                    ring_allocator_gpu_fraction=ring_allocator_gpu_fraction,
                                 )
                     modules_processed.append(child_module)
                 elif (
@@ -138,8 +193,10 @@ class MemoryManager:
                             ara = child_module.ara_lora_ref()
                             if ara not in modules_processed:
                                 MemoryManager.attach(
-                                    ara, 
+                                    ara,
                                     device,
+                                    use_ring_allocator=use_ring_allocator,
+                                    ring_allocator_gpu_fraction=ring_allocator_gpu_fraction,
                                 )
                             modules_processed.append(ara)
                     modules_processed.append(child_module)

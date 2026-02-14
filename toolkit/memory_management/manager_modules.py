@@ -6,11 +6,14 @@ https://github.com/lodestone-rock/RamTorch/blob/main/ramtorch/modules/linear.py
 I simply modified it to work with a memory management model and with AI Toolkit's models
 """
 
+from typing import TYPE_CHECKING, Optional, Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import TYPE_CHECKING, Optional, Tuple
 from torch.overrides import has_torch_function_unary  # (ADD) torchao detection
+
+from .ring_allocator import RingBufferAllocator
 
 if TYPE_CHECKING:
     from .manager import MemoryManager
@@ -32,12 +35,17 @@ def _get_device_state(device: torch.device):
 
     if device not in _DEVICE_STATE:
         with torch.cuda.device(device):
+            forward_slot_finished_events = [torch.cuda.Event(), torch.cuda.Event()]
+            # Mark slots as initially reusable.
+            for ev in forward_slot_finished_events:
+                ev.record()
             _DEVICE_STATE[device] = {
                 # streams & events
                 "transfer_stream": torch.cuda.Stream(device=device),
                 "transfer_grad_stream": torch.cuda.Stream(device=device),
                 "transfer_forward_finished_event": torch.cuda.Event(),
                 "compute_forward_start_event": torch.cuda.Event(),
+                "compute_forward_slot_finished_events": forward_slot_finished_events,
                 "transfer_backward_finished_event": torch.cuda.Event(),
                 "transfer_weight_backward_finished_event": torch.cuda.Event(),
                 "compute_backward_start_event": torch.cuda.Event(),
@@ -52,6 +60,9 @@ def _get_device_state(device: torch.device):
                 # clocks
                 "forward_clk": 0,
                 "backward_clk": 0,
+                # optional static allocators
+                "ring_allocator_gpu": None,
+                "use_ring_allocator": False,
             }
     return _DEVICE_STATE[device]
 
@@ -162,8 +173,13 @@ class _BouncingLinearFn(torch.autograd.Function):
             else torch.bfloat16
         )
 
-        # GPU-side dequant/cast for quantized; float path unchanged
-        def _materialize_linear_weight(cpu_w, dev):
+        state = _get_device_state(device)
+        allocator: Optional[RingBufferAllocator] = (
+            state.get("ring_allocator_gpu") if state.get("use_ring_allocator") else None
+        )
+
+        # GPU-side dequant/cast for quantized; ring allocator used for float path.
+        def _materialize_linear_weight(cpu_w, dev, alloc=None, layer_idx=-1):
             if _is_quantized_tensor(cpu_w):
                 # move quantized wrapper to GPU -> dequantize on GPU -> cast on GPU
                 w_q_gpu = cpu_w.to(dev, non_blocking=True)
@@ -174,7 +190,12 @@ class _BouncingLinearFn(torch.autograd.Function):
                 if w_fp_gpu.dtype != target_dtype:
                     w_fp_gpu = w_fp_gpu.to(target_dtype, non_blocking=True)
                 return w_fp_gpu
-            # float path (preserve original behavior: NO dtype cast)
+            if alloc is not None:
+                buf = alloc.allocate_like(cpu_w, layer_index=layer_idx)
+                if buf is not None:
+                    buf.copy_(cpu_w, non_blocking=True)
+                    return buf
+            # float path fallback (preserve original behavior: NO dtype cast)
             w_gpu = cpu_w.to(dev, non_blocking=True)
             return w_gpu
 
@@ -188,16 +209,21 @@ class _BouncingLinearFn(torch.autograd.Function):
             ctx.device = torch.device("cpu")
             return out.to(x.device)
 
-        state = _get_device_state(device)
         ts = state["transfer_stream"]
         w_bufs, b_bufs = state["w_buffers"], state["b_buffers"]
         ev_tx_f = state["transfer_forward_finished_event"]
         ev_cu_s = state["compute_forward_start_event"]
+        ev_cu_f_slots = state["compute_forward_slot_finished_events"]
         idx = state["forward_clk"]
 
         with torch.cuda.stream(ts):
             ts.wait_event(ev_cu_s)
-            w_bufs[idx] = _materialize_linear_weight(weight_cpu, device)
+            ts.wait_event(ev_cu_f_slots[idx])
+            if allocator is not None:
+                allocator.deallocate_layer(idx)
+            w_bufs[idx] = _materialize_linear_weight(
+                weight_cpu, device, alloc=allocator, layer_idx=idx
+            )
             b_bufs[idx] = (
                 bias_cpu.to(device, non_blocking=True) if bias_cpu is not None else None
             )
@@ -207,6 +233,7 @@ class _BouncingLinearFn(torch.autograd.Function):
         torch.cuda.current_stream().wait_event(ev_tx_f)
         ev_cu_s.record()
         out = F.linear(x, w_bufs[idx], b_bufs[idx])
+        ev_cu_f_slots[idx].record()
 
         ctx.save_for_backward(x, weight_cpu, bias_cpu)
         ctx.device = device
@@ -339,8 +366,13 @@ class _BouncingConv2dFn(torch.autograd.Function):
             else torch.bfloat16
         )
 
-        # GPU-side dequant/cast for quantized; float path unchanged
-        def _materialize_conv_weight(cpu_w, dev):
+        state = _get_device_state(device)
+        allocator: Optional[RingBufferAllocator] = (
+            state.get("ring_allocator_gpu") if state.get("use_ring_allocator") else None
+        )
+
+        # GPU-side dequant/cast for quantized; ring allocator used for float path.
+        def _materialize_conv_weight(cpu_w, dev, alloc=None, layer_idx=-1):
             if _is_quantized_tensor(cpu_w):
                 w_q_gpu = cpu_w.to(dev, non_blocking=True)
                 try:
@@ -350,7 +382,12 @@ class _BouncingConv2dFn(torch.autograd.Function):
                 if w_fp_gpu.dtype != target_dtype:
                     w_fp_gpu = w_fp_gpu.to(target_dtype, non_blocking=True)
                 return w_fp_gpu
-            # float path (preserve original behavior: NO dtype cast)
+            if alloc is not None:
+                buf = alloc.allocate_like(cpu_w, layer_index=layer_idx)
+                if buf is not None:
+                    buf.copy_(cpu_w, non_blocking=True)
+                    return buf
+            # float path fallback (preserve original behavior: NO dtype cast)
             w_gpu = cpu_w.to(dev, non_blocking=True)
             return w_gpu
 
@@ -368,16 +405,21 @@ class _BouncingConv2dFn(torch.autograd.Function):
             ctx.meta = ("cpu", stride, padding, dilation, groups, target_dtype)
             return out.to(x.device)
 
-        state = _get_device_state(device)
         ts = state["transfer_stream"]
         w_bufs, b_bufs = state["w_buffers"], state["b_buffers"]
         ev_tx_f = state["transfer_forward_finished_event"]
         ev_cu_s = state["compute_forward_start_event"]
+        ev_cu_f_slots = state["compute_forward_slot_finished_events"]
         idx = state["forward_clk"]
 
         with torch.cuda.stream(ts):
             ts.wait_event(ev_cu_s)
-            w_bufs[idx] = _materialize_conv_weight(weight_cpu, device)
+            ts.wait_event(ev_cu_f_slots[idx])
+            if allocator is not None:
+                allocator.deallocate_layer(idx)
+            w_bufs[idx] = _materialize_conv_weight(
+                weight_cpu, device, alloc=allocator, layer_idx=idx
+            )
             b_bufs[idx] = (
                 bias_cpu.to(device, non_blocking=True) if bias_cpu is not None else None
             )
@@ -387,6 +429,7 @@ class _BouncingConv2dFn(torch.autograd.Function):
         torch.cuda.current_stream().wait_event(ev_tx_f)
         ev_cu_s.record()
         out = F.conv2d(x, w_bufs[idx], b_bufs[idx], stride, padding, dilation, groups)
+        ev_cu_f_slots[idx].record()
 
         ctx.save_for_backward(x, weight_cpu, bias_cpu)
         ctx.meta = (device, stride, padding, dilation, groups, target_dtype)
@@ -609,7 +652,7 @@ class LinearLayerMemoryManager(BaseLayerMemoryManager):
             self.module.ara_lora_ref().org_forward = _mm_forward
         else:
             self.module.forward = _mm_forward
-        
+
         self.module._memory_management_device = self.manager.process_device
 
 
@@ -666,5 +709,5 @@ class ConvLayerMemoryManager(BaseLayerMemoryManager):
             self.module.ara_lora_ref().org_forward = _mm_forward
         else:
             self.module.forward = _mm_forward
-        
+
         self.module._memory_management_device = self.manager.process_device
