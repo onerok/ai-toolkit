@@ -303,6 +303,17 @@ class StableDiffusion:
         unet_unwrapped = unwrap_model(self.unet)
         unet_unwrapped.deactivate_offload_conductor()
         return True
+
+    def get_offload_conductor_stats(self) -> Optional[dict[str, typing.Any]]:
+        if not self.supports_offload_conductor():
+            return None
+        unet_unwrapped = unwrap_model(self.unet)
+        if hasattr(unet_unwrapped, "get_offload_conductor_stats"):
+            return unet_unwrapped.get_offload_conductor_stats()
+        conductor = getattr(unet_unwrapped, "offload_conductor", None)
+        if conductor is not None and hasattr(conductor, "get_stats"):
+            return conductor.get_stats()
+        return None
     
     def get_bucket_divisibility(self):
         if self.vae is None:

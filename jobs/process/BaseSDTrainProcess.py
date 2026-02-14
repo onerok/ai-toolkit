@@ -2584,6 +2584,19 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     # CPU and RAM usage
                     system_metrics['cpu_percent'] = psutil.cpu_percent()
                     system_metrics['ram_gb'] = psutil.virtual_memory().used / (1024 ** 3)
+                    if self.offload_conductor_enabled:
+                        conductor_stats = self.sd.get_offload_conductor_stats()
+                        if conductor_stats:
+                            system_metrics["offload_loaded_layers"] = conductor_stats.get("loaded_layers", 0)
+                            system_metrics["offload_deferred_layers"] = conductor_stats.get("deferred_offloads", 0)
+                            system_metrics["offload_load_ops"] = conductor_stats.get("load_ops", 0)
+                            system_metrics["offload_offload_ops"] = conductor_stats.get("offload_ops", 0)
+                            system_metrics["offload_grad_blocked"] = conductor_stats.get("grad_blocked_offloads", 0)
+                            system_metrics["offload_deferred_retries"] = conductor_stats.get("deferred_retries", 0)
+                            system_metrics["offload_deferred_requeues"] = conductor_stats.get("deferred_requeues", 0)
+                            recent_events = conductor_stats.get("recent_events", [])
+                            if recent_events:
+                                system_metrics["offload_recent_events"] = "|".join(recent_events[-12:])
                     self.logger.log(system_metrics)
 
                 # commit log

@@ -4,7 +4,7 @@ from torch import Tensor, nn
 import torch.utils.checkpoint as ckpt
 import math
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from toolkit.memory_management.offload_conductor import OffloadConductor
 
@@ -179,6 +179,11 @@ class Flux2(nn.Module):
             return False
         self.offload_conductor.deactivate()
         return not self.offload_conductor.is_active
+
+    def get_offload_conductor_stats(self) -> Optional[dict[str, Any]]:
+        if self.offload_conductor is None:
+            return None
+        return self.offload_conductor.get_stats()
 
     def _before_layer(self, layer_index: int) -> None:
         if self.offload_conductor is not None and self.offload_conductor.is_active:

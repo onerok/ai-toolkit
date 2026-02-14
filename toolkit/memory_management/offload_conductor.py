@@ -9,8 +9,9 @@ Manages CPU<->GPU transfers for transformer blocks with:
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from typing import Optional, Set
+from typing import Any, Optional, Set
 
 import torch
 from torch import nn
@@ -174,6 +175,12 @@ class OffloadConductor:
         self.keep_graph = False
         self.is_active = False
         self._deferred_offloads: list[int] = []
+        self._recent_events: deque[str] = deque(maxlen=64)
+        self._load_count = 0
+        self._offload_count = 0
+        self._grad_blocked_offload_count = 0
+        self._deferred_retry_count = 0
+        self._deferred_requeue_count = 0
 
         if self.train_device.type == "cuda":
             self.train_stream = torch.cuda.default_stream(self.train_device)
@@ -185,6 +192,10 @@ class OffloadConductor:
             self.layer_transfer_stream = None
             self.activations_transfer_stream = None
             self.async_transfer = False
+
+    def _record_event(self, event: str, layer_index: int, detail: str = "") -> None:
+        suffix = f":{detail}" if detail else ""
+        self._recent_events.append(f"{event}@{layer_index}{suffix}")
 
     def add_layer(self, layer: nn.Module) -> int:
         idx = len(self.layers)
@@ -279,6 +290,11 @@ class OffloadConductor:
             is_next_forward=not self.keep_graph,
             loaded_layers=loaded,
         )
+        self._record_event(
+            "before",
+            layer_index,
+            f"fwd={int(self.is_forward_pass)},load={len(schedule.layers_to_load)},offload={len(schedule.layers_to_offload)}",
+        )
 
         for idx in schedule.layers_to_offload:
             self._schedule_offload(idx)
@@ -296,7 +312,9 @@ class OffloadConductor:
 
     def _schedule_load(self, layer_index: int) -> None:
         if self.layer_device_map[layer_index] == self.train_device:
+            self._record_event("load_skip", layer_index, "already_on_train")
             return
+        self._record_event("load", layer_index)
         if self.async_transfer:
             with torch.cuda.stream(self.layer_transfer_stream):
                 self.layer_train_events[layer_index].wait(self.layer_transfer_stream)
@@ -307,18 +325,23 @@ class OffloadConductor:
 
     def _schedule_offload(self, layer_index: int) -> None:
         if self.layer_device_map[layer_index] == self.temp_device:
+            self._record_event("offload_skip", layer_index, "already_on_temp")
             return
 
         layer = self.layers[layer_index]
         has_live_grad = any(param.grad is not None for param in layer.parameters())
         if has_live_grad:
+            self._grad_blocked_offload_count += 1
             if self.strict_gradient_offload:
                 raise RuntimeError(
                     f"Refusing to offload layer {layer_index} with live gradients while strict offload is enabled."
                 )
-            self._deferred_offloads.append(layer_index)
+            if layer_index not in self._deferred_offloads:
+                self._deferred_offloads.append(layer_index)
+            self._record_event("offload_defer", layer_index, "live_grad")
             return
 
+        self._record_event("offload", layer_index)
         if self.async_transfer:
             with torch.cuda.stream(self.layer_transfer_stream):
                 self.layer_train_events[layer_index].wait(self.layer_transfer_stream)
@@ -340,6 +363,7 @@ class OffloadConductor:
             param.data = gpu_tensor
         self.cpu_allocator.deallocate_layer(layer_index)
         self.layer_device_map[layer_index] = self.train_device
+        self._load_count += 1
 
     def _offload_layer_impl(self, layer_index: int) -> None:
         if self.gpu_allocator is None or self.cpu_allocator is None:
@@ -354,6 +378,7 @@ class OffloadConductor:
             param.data = cpu_tensor
         self.gpu_allocator.deallocate_layer(layer_index)
         self.layer_device_map[layer_index] = self.temp_device
+        self._offload_count += 1
 
     def _load_layer_sync(self, layer_index: int) -> None:
         self.layers[layer_index].to(self.train_device)
@@ -372,10 +397,15 @@ class OffloadConductor:
         self._deferred_offloads = []
         for layer_index in pending:
             if layer_index == except_layer:
+                self._deferred_requeue_count += 1
+                self._record_event("offload_requeue", layer_index, "current_layer")
+                if layer_index not in self._deferred_offloads:
+                    self._deferred_offloads.append(layer_index)
                 continue
+            self._deferred_retry_count += 1
             self._schedule_offload(layer_index)
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, Any]:
         loaded = self._get_loaded_layers()
         return {
             "total_layers": len(self.layers),
@@ -384,6 +414,12 @@ class OffloadConductor:
             "is_active": self.is_active,
             "is_forward": self.is_forward_pass,
             "deferred_offloads": len(self._deferred_offloads),
+            "load_ops": self._load_count,
+            "offload_ops": self._offload_count,
+            "grad_blocked_offloads": self._grad_blocked_offload_count,
+            "deferred_retries": self._deferred_retry_count,
+            "deferred_requeues": self._deferred_requeue_count,
+            "recent_events": list(self._recent_events),
             "gpu_allocator": self.gpu_allocator.get_stats() if self.gpu_allocator else None,
             "cpu_allocator": self.cpu_allocator.get_stats() if self.cpu_allocator else None,
         }
