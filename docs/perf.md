@@ -310,23 +310,28 @@ Phase 6 (Accelerate bypass) ← Independent (can run anytime)
 ## Configuration Summary
 
 ```yaml
-memory_management:
+model:
   # Phase 1: Always enabled (bug fix)
 
   # Phase 2: Ring buffer allocation
-  use_ring_allocator: true
-  ring_allocator_gpu_fraction: 0.25  # Fraction of model size for GPU staging
+  # (via MemoryManager.attach params)
+  layer_offloading: false
+  layer_offloading_transformer_percent: 1.0
+  layer_offloading_text_encoder_percent: 1.0
 
   # Phase 4: Coordinated offloading
-  use_offload_conductor: false
-  layer_offload_fraction: 0.5
+  # Proposed extension if conductor is added:
+  # use_offload_conductor: false
+  # layer_offload_fraction: 0.5
 
   # Phase 5: Activation offloading
-  activation_offload: false
+  # Proposed extension:
+  # activation_offload: false
   # Requires: use_offload_conductor: true
 
   # Phase 6: Accelerate bypass
-  bypass_accelerate: null  # null = auto-detect
+  # Proposed extension:
+  # bypass_accelerate: null  # null = auto-detect
 
 train:
   # Phase 3: Fused backward

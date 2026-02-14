@@ -3,7 +3,7 @@
 **Impact:** Reduces PCIe contention, enables overlapped compute/transfer
 **Risk:** Medium — core training path change
 **Effort:** 1-2 weeks
-**Dependencies:** Phase 2 (ring allocator)
+**Dependencies:** Phase 2 (ring allocator), Phase 3 (fused backward)
 
 ---
 
@@ -31,11 +31,35 @@ Result: PCIe transfers are uncoordinated, causing congestion and stalls.
 | File | Change |
 |------|--------|
 | NEW: `toolkit/memory_management/offload_conductor.py` | OffloadStrategy, OffloadConductor |
-| `toolkit/memory_management/manager.py` | Integration with MemoryManager |
-| `extensions_built_in/sd_trainer/SDTrainer.py` | Hook into training loop |
-| Model-specific files | Register transformer blocks |
+| `toolkit/memory_management/manager.py` | Integration entry points for layer transfer allocators |
+| `jobs/process/BaseSDTrainProcess.py` | Lifecycle setup/teardown and safety gating |
+| Model setup/checkpointing integration | Register layer order and wrap checkpointed blocks |
 
 ---
+
+## Correctness Guardrails
+
+Before implementing, preserve these invariants from OneTrainer and existing AI Toolkit behavior:
+
+1. **Integrate at checkpoint wrapper/model layer level, not SDTrainer block loop.**
+   - In this repo, model forward paths are extension-specific and not centralized in `SDTrainer`.
+   - Matching OneTrainer means patching checkpointed layer wrappers (`before_layer` / `after_layer`) where execution order is explicit.
+
+2. **Forward/backward transition detection assumes `use_reentrant=True` checkpointing.**
+   - `torch.is_grad_enabled()` is only a reliable backward-recompute signal in that mode.
+   - If a non-reentrant path is used, transition detection must use explicit phase state, not grad-enabled checks.
+
+3. **Keep offload ordering consistent with OneTrainer strategy.**
+   - Forward pass offload/load ordering should prioritize `>= layer_index` first, then `< layer_index`.
+   - Backward pass ordering is the inverse.
+
+4. **Do not silently defer every offload when gradients are present.**
+   - Gradient-present offload deferral is a narrow multi-GPU async-reduce exception.
+   - Otherwise this should fail fast (or be gated behind fused-backward guarantees), not degrade silently.
+
+5. **Use existing config schema names unless explicitly adding new keys.**
+   - Current repo uses `model.layer_offloading_*` knobs, not `memory_management.use_offload_conductor`.
+   - If new conductor flags are added, document migration and defaults clearly.
 
 ## Implementation
 
@@ -229,13 +253,13 @@ class OffloadStrategy:
 
         # Order offloads/loads optimally
         if is_forward:
-            # Offload layers we've passed first
-            to_offload = [i for i in to_offload if i < layer_index] + \
-                        [i for i in to_offload if i >= layer_index]
+            # Match OneTrainer ordering for forward scheduling.
+            to_offload = [i for i in to_offload if i >= layer_index] + \
+                        [i for i in to_offload if i < layer_index]
         else:
             # Backward: offload in reverse order
-            to_offload = [i for i in reversed(to_offload) if i > layer_index] + \
-                        [i for i in reversed(to_offload) if i <= layer_index]
+            to_offload = [i for i in reversed(to_offload) if i < layer_index] + \
+                        [i for i in reversed(to_offload) if i >= layer_index]
 
         return OffloadSchedule(layers_to_load=to_load, layers_to_offload=to_offload)
 
@@ -428,7 +452,8 @@ class OffloadConductor:
         if not self.is_active:
             return
 
-        # Detect forward→backward transition
+        # Detect forward→backward transition.
+        # NOTE: valid when layers are executed under reentrant checkpointing wrappers.
         if torch.is_grad_enabled() and self.is_forward_pass:
             # Gradients enabled during forward = we're in backward recompute
             self.is_forward_pass = False
@@ -494,7 +519,9 @@ class OffloadConductor:
         if self.layer_device_map[layer_index] == self.temp_device:
             return
 
-        # Check if layer has pending gradients (multi-GPU)
+        # Check if layer has pending gradients.
+        # In production, defer only for supported multi-GPU async-reduce paths;
+        # otherwise fail fast to avoid silent schedule degradation.
         layer = self.layers[layer_index]
         for param in layer.parameters():
             if param.grad is not None:
@@ -575,55 +602,25 @@ class OffloadConductor:
         }
 ```
 
-### Step 2: Integration with training
+### Step 2: Integration with model checkpoint wrappers
 
-**File:** `extensions_built_in/sd_trainer/SDTrainer.py`
+**Files:** model setup + checkpointing wrappers (per architecture), with lifecycle hooks in `BaseSDTrainProcess`
 
 ```python
 from toolkit.memory_management.offload_conductor import OffloadConductor
 
-class SDTrainer:
-    def __init__(self, ...):
-        # ... existing init ...
-        self.offload_conductor: Optional[OffloadConductor] = None
-
-    def setup_offload_conductor(self):
-        """Set up coordinated layer offloading."""
-        if not self.train_config.use_offload_conductor:
-            return
-
-        self.offload_conductor = OffloadConductor(
-            train_device=self.device_torch,
-            temp_device=torch.device("cpu"),
-            layer_offload_fraction=self.train_config.layer_offload_fraction
-        )
-
-        # Register transformer blocks
-        # This is model-specific - example for Flux:
-        if hasattr(self.sd.unet, 'transformer_blocks'):
-            for block in self.sd.unet.transformer_blocks:
-                self.offload_conductor.add_layer(block)
-
-        self.offload_conductor.activate()
-
-    def hook_train_loop(self, batch):
-        # Start forward
-        if self.offload_conductor:
-            self.offload_conductor.start_forward(keep_graph=self.training)
-
-        # ... existing forward code ...
-
-        # If using conductor, wrap block execution
-        if self.offload_conductor:
-            for i, block in enumerate(self.sd.unet.transformer_blocks):
-                self.offload_conductor.before_layer(i)
-                hidden_states = block(hidden_states, ...)
-                self.offload_conductor.after_layer(i)
-        else:
-            # Original path
-            hidden_states = self.sd.unet(...)
-
-        # ... rest of training loop ...
+# Pseudocode mirroring OneTrainer's checkpoint_util integration pattern:
+#
+# 1) Build conductor where checkpointed layers are registered in exact execution order.
+# 2) Wrap each checkpointed layer forward:
+#       args = conductor.before_layer(layer_idx, call_id, args)
+#       out = orig_forward(*args)
+#       conductor.after_layer(layer_idx, call_id, args)
+# 3) At start of forward pass:
+#       conductor.start_forward(keep_graph=True)  # training
+#       conductor.start_forward(keep_graph=False) # eval/inference
+#
+# This avoids model-specific SDTrainer surgery and keeps execution order explicit.
 ```
 
 ---
@@ -631,9 +628,14 @@ class SDTrainer:
 ## Configuration
 
 ```yaml
-memory_management:
-  use_offload_conductor: false  # default: false (opt-in)
-  layer_offload_fraction: 0.5   # 0.0 = all on GPU, 1.0 = all offloaded
+model:
+  # Existing knobs in this repo (today):
+  layer_offloading: false
+  layer_offloading_transformer_percent: 0.5
+  layer_offloading_text_encoder_percent: 0.0
+
+  # If adding a conductor-specific toggle, keep it opt-in and define migration:
+  # use_offload_conductor: false
 ```
 
 ---
