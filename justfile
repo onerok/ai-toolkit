@@ -72,23 +72,40 @@ perf-memory:
 
 # Run benchmark with training (requires datasets/perf_test/)
 perf-train steps="20" save_at="10" clipscore_threshold="0.20":
-    uv run python scripts/perf_benchmark.py --steps {{steps}} --save-at {{save_at}} --clean-output --validate-generation --clipscore-threshold {{clipscore_threshold}}
+    #!/usr/bin/env bash
+    steps_val="{{steps}}"; steps_val="${steps_val#*=}"
+    save_at_val="{{save_at}}"; save_at_val="${save_at_val#*=}"
+    clipscore_threshold_val="{{clipscore_threshold}}"; clipscore_threshold_val="${clipscore_threshold_val#*=}"
+    uv run python scripts/perf_benchmark.py --steps "${steps_val}" --save-at "${save_at_val}" --clean-output --validate-generation --clipscore-threshold "${clipscore_threshold_val}"
 
 # Capture baseline with a tag (memory-only)
 perf-baseline tag:
-    uv run python scripts/collect_baselines.py --tag "{{tag}}" --memory-only
+    #!/usr/bin/env bash
+    tag_val="{{tag}}"; tag_val="${tag_val#*=}"
+    uv run python scripts/collect_baselines.py --tag "${tag_val}" --memory-only
 
 # Capture baseline with training (requires datasets/perf_test/)
 perf-baseline-train tag steps="20" save_at="10" clipscore_threshold="0.20":
-    uv run python scripts/collect_baselines.py --tag "{{tag}}" --steps {{steps}} --save-at {{save_at}} --clean-output --validate-generation --clipscore-threshold {{clipscore_threshold}}
+    #!/usr/bin/env bash
+    tag_val="{{tag}}"; tag_val="${tag_val#*=}"
+    steps_val="{{steps}}"; steps_val="${steps_val#*=}"
+    save_at_val="{{save_at}}"; save_at_val="${save_at_val#*=}"
+    clipscore_threshold_val="{{clipscore_threshold}}"; clipscore_threshold_val="${clipscore_threshold_val#*=}"
+    #uv run python scripts/collect_baselines.py --tag "${tag_val}" --steps "${steps_val}" --save-at "${save_at_val}" --clean-output --validate-generation --clipscore-threshold "${clipscore_threshold_val}"
+    uv run python scripts/collect_baselines.py --tag "${tag_val}" --steps "${steps_val}" --save-at "${save_at_val}" --clean-output 
 
 # Compare current state against a saved baseline
 perf-compare baseline:
-    uv run python scripts/compare_baselines.py --baseline "{{baseline}}" --current --memory-only
+    #!/usr/bin/env bash
+    baseline_val="{{baseline}}"; baseline_val="${baseline_val#*=}"
+    uv run python scripts/compare_baselines.py --baseline "${baseline_val}" --current --memory-only
 
 # Compare two saved baselines
 perf-diff baseline1 baseline2:
-    uv run python scripts/compare_baselines.py --baseline "{{baseline1}}" --compare "{{baseline2}}"
+    #!/usr/bin/env bash
+    baseline1_val="{{baseline1}}"; baseline1_val="${baseline1_val#*=}"
+    baseline2_val="{{baseline2}}"; baseline2_val="${baseline2_val#*=}"
+    uv run python scripts/compare_baselines.py --baseline "${baseline1_val}" --compare "${baseline2_val}"
 
 # List saved baselines
 perf-list:
