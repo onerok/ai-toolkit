@@ -98,17 +98,26 @@ Run a fixed-seed control and ablations in this order:
 
 ### Validation Snapshot
 - Automated fixed-seed ablation run:
-  - `output/phase4_ablations/20260214_110624`
+  - `output/phase4_ablations/20260214_125702`
 - Control repeat:
-  - `relative_delta=0.0677`, `cosine=0.9977`
+  - `relative_delta=0.0930`
 - Ablation relative deltas:
-  - fused: `0.0619`
-  - conductor: `0.0705`
-  - stable_loss: `0.0914`
-  - layer_offloading: `0.1528` (largest deviation)
+  - fused: `0.0856`
+  - conductor: `0.0865`
+  - layer_offloading: `0.0869`
+  - stable_loss: `0.1045`
 
 ### Immediate Next Focus
-- Investigate `layer_offloading` drift first:
-  - `toolkit/memory_management/manager.py`
-  - `toolkit/memory_management/manager_modules.py`
-- Hold Phase 5/6 rollout decisions on layer offload path until this drift is explained or reduced.
+- `layer_offloading` now tracks baseline noise band in this run; keep monitoring with the same fixed-seed ablation harness.
+- Track determinism tightening separately (`control_repeat` remains above preferred threshold).
+
+### Follow-up Update (2026-02-14)
+- Offload conductor instrumentation added for drift diagnostics:
+  - counters: `load_ops`, `offload_ops`, `grad_blocked_offloads`, `deferred_retries`, `deferred_requeues`
+  - order trace: `recent_events` ring buffer
+- Per-step training metrics now include conductor diagnostics when conductor is enabled:
+  - `offload_loaded_layers`, `offload_deferred_layers`, `offload_load_ops`, `offload_offload_ops`,
+    `offload_grad_blocked`, `offload_deferred_retries`, `offload_deferred_requeues`, `offload_recent_events`
+- Correctness fix in offload scheduling:
+  - deferred offloads matching the current executing layer are now re-queued instead of dropped
+  - added regression test coverage in `testing/test_offload_conductor_integration.py`

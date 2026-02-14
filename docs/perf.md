@@ -335,21 +335,20 @@ Phase 7 (Accelerate bypass) ← Independent (can run anytime)
     - explicit control-repeat sanity check
 
 - Verified run:
-  - Run root: `output/phase4_ablations/20260214_110624`
+  - Run root: `output/phase4_ablations/20260214_125702`
   - Control repeat sanity:
-    - `relative_delta=0.0677`
-    - `cosine=0.9977`
+    - `relative_delta=0.0930`
 
 - Per-knob deltas vs control:
-  - `fused_back_pass`: `relative_delta=0.0619`, `cosine=0.9981`
-  - `offload_conductor`: `relative_delta=0.0705`, `cosine=0.9975`
-  - `stable_loss`: `relative_delta=0.0914`, `cosine=0.9958`
-  - `layer_offloading`: `relative_delta=0.1528`, `cosine=0.9884`
+  - `fused_back_pass`: `relative_delta=0.0856`
+  - `offload_conductor`: `relative_delta=0.0865`
+  - `layer_offloading`: `relative_delta=0.0869`
+  - `stable_loss`: `relative_delta=0.1045`
 
 - Current interpretation:
-  - Baseline determinism is now acceptable for ablation decisions.
-  - `layer_offloading` is the clear outlier and should be treated as the primary regression to investigate before Phase 5/6 progression.
-  - `fused_back_pass` and `offload_conductor` currently track control-repeat noise band closely.
+  - `layer_offloading` is no longer an outlier in the quantized Flux2 ablation path.
+  - Baseline run-to-run drift (`control_repeat`) remains above the preferred warning level (`0.05`) and should be tracked as separate determinism work.
+  - Keep the ablation analyzer in place as a guardrail for subsequent perf phases.
 
 ---
 
