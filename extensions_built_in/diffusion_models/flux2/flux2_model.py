@@ -115,11 +115,16 @@ class Flux2Model(BaseModel):
             self.model_config.layer_offloading
             and self.model_config.layer_offloading_text_encoder_percent > 0
         ):
-            MemoryManager.attach(
-                text_encoder,
-                self.device_torch,
-                offload_percent=self.model_config.layer_offloading_text_encoder_percent,
-            )
+            if self.model_config.quantize_te:
+                self.print_and_status_update(
+                    "Warning: skipping text-encoder layer offloading for quantized Flux2 text encoder."
+                )
+            else:
+                MemoryManager.attach(
+                    text_encoder,
+                    self.device_torch,
+                    offload_percent=self.model_config.layer_offloading_text_encoder_percent,
+                )
 
         tokenizer = AutoProcessor.from_pretrained(MISTRAL_PATH)
         return text_encoder, tokenizer
@@ -127,6 +132,18 @@ class Flux2Model(BaseModel):
     def load_model(self):
         dtype = self.torch_dtype
         self.print_and_status_update("Loading Flux2 model")
+        if (
+            self.model_config.layer_offloading
+            and self.model_config.quantize
+            and not self.model_config.use_offload_conductor
+        ):
+            self.print_and_status_update(
+                "Warning: disabling layer offloading for quantized Flux2 without offload conductor."
+            )
+            self.model_config.layer_offloading = False
+            self.model_config.layer_offloading_transformer_percent = 0.0
+            self.model_config.layer_offloading_text_encoder_percent = 0.0
+
         # will be updated if we detect a existing checkpoint in training folder
         model_path = self.model_config.name_or_path
         transformer_path = model_path
@@ -177,6 +194,10 @@ class Flux2Model(BaseModel):
                     temp_device=torch.device("cpu"),
                     layer_offload_fraction=self.model_config.layer_offloading_transformer_percent,
                     strict_gradient_offload=True,
+                )
+            elif self.model_config.quantize:
+                self.print_and_status_update(
+                    "Warning: skipping transformer layer offloading for quantized Flux2 transformer."
                 )
             else:
                 MemoryManager.attach(

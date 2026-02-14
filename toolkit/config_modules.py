@@ -662,10 +662,6 @@ class ModelConfig:
         if self.auto_memory:
             print("auto_memory is deprecated, use layer_offloading instead")
         self.layer_offloading = kwargs.get("layer_offloading", self.auto_memory )
-        if self.layer_offloading and self.qtype == "qfloat8":
-            self.qtype = "float8"
-        if self.layer_offloading and self.qtype_te == "qfloat8":
-            self.qtype_te = "float8"
         
         # 0 is off and 1.0 is 100% of the layers
         self.layer_offloading_transformer_percent = kwargs.get("layer_offloading_transformer_percent", 1.0)

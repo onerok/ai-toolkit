@@ -58,11 +58,16 @@ class Flux2KleinModel(Flux2Model):
             self.model_config.layer_offloading
             and self.model_config.layer_offloading_text_encoder_percent > 0
         ):
-            MemoryManager.attach(
-                text_encoder,
-                self.device_torch,
-                offload_percent=self.model_config.layer_offloading_text_encoder_percent,
-            )
+            if self.model_config.quantize_te:
+                self.print_and_status_update(
+                    "Warning: skipping text-encoder layer offloading for quantized Flux2 text encoder."
+                )
+            else:
+                MemoryManager.attach(
+                    text_encoder,
+                    self.device_torch,
+                    offload_percent=self.model_config.layer_offloading_text_encoder_percent,
+                )
 
         tokenizer = Qwen2Tokenizer.from_pretrained(self.flux2_klein_te_path)
         return text_encoder, tokenizer
