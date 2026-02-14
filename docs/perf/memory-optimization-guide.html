@@ -1,0 +1,1731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Toolkit Memory Optimization Guide</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-cell: #16213e;
+            --bg-code: #0f0f1a;
+            --text-primary: #e8e8e8;
+            --text-secondary: #a0a0a0;
+            --accent-blue: #4fc3f7;
+            --accent-green: #81c784;
+            --accent-orange: #ffb74d;
+            --accent-red: #e57373;
+            --accent-purple: #ba68c8;
+            --border-color: #2a2a4a;
+            --cell-number: #666;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .notebook {
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            padding: 40px 20px;
+            border-bottom: 2px solid var(--border-color);
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin: 0 0 10px 0;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header .subtitle {
+            color: var(--text-secondary);
+            font-size: 1.2em;
+        }
+
+        .cell {
+            background: var(--bg-cell);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .cell-header {
+            display: flex;
+            align-items: center;
+            padding: 8px 15px;
+            background: rgba(0,0,0,0.2);
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.85em;
+        }
+
+        .cell-type {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75em;
+            letter-spacing: 0.5px;
+        }
+
+        .cell-type.markdown {
+            background: var(--accent-blue);
+            color: #000;
+        }
+
+        .cell-type.code {
+            background: var(--accent-green);
+            color: #000;
+        }
+
+        .cell-type.diagram {
+            background: var(--accent-purple);
+            color: #fff;
+        }
+
+        .cell-number {
+            margin-left: auto;
+            color: var(--cell-number);
+            font-family: monospace;
+        }
+
+        .cell-content {
+            padding: 20px;
+        }
+
+        .cell-content h2 {
+            color: var(--accent-blue);
+            margin-top: 0;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 10px;
+        }
+
+        .cell-content h3 {
+            color: var(--accent-orange);
+            margin-top: 25px;
+        }
+
+        .cell-content h4 {
+            color: var(--accent-green);
+        }
+
+        pre {
+            background: var(--bg-code);
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-family: 'Fira Code', 'Consolas', monospace;
+            font-size: 0.9em;
+            line-height: 1.5;
+            border: 1px solid var(--border-color);
+        }
+
+        code {
+            font-family: 'Fira Code', 'Consolas', monospace;
+            background: var(--bg-code);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+
+        pre code {
+            background: none;
+            padding: 0;
+        }
+
+        .keyword { color: var(--accent-purple); }
+        .string { color: var(--accent-green); }
+        .comment { color: var(--text-secondary); font-style: italic; }
+        .function { color: var(--accent-blue); }
+        .number { color: var(--accent-orange); }
+
+        /* Diagram Styles */
+        .diagram-container {
+            background: var(--bg-code);
+            border-radius: 8px;
+            padding: 30px;
+            margin: 20px 0;
+            overflow-x: auto;
+        }
+
+        .memory-bar {
+            display: flex;
+            height: 50px;
+            border-radius: 6px;
+            overflow: hidden;
+            margin: 15px 0;
+            border: 2px solid var(--border-color);
+        }
+
+        .memory-segment {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.85em;
+            transition: all 0.3s ease;
+        }
+
+        .memory-segment:hover {
+            filter: brightness(1.2);
+        }
+
+        .seg-params { background: var(--accent-blue); color: #000; }
+        .seg-grads { background: var(--accent-orange); color: #000; }
+        .seg-optimizer { background: var(--accent-red); color: #fff; }
+        .seg-activations { background: var(--accent-purple); color: #fff; }
+        .seg-free { background: #333; color: var(--text-secondary); }
+
+        .flow-diagram {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            padding: 20px;
+        }
+
+        .flow-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .flow-box {
+            padding: 12px 20px;
+            border-radius: 6px;
+            font-weight: 500;
+            text-align: center;
+            min-width: 120px;
+        }
+
+        .flow-arrow {
+            color: var(--text-secondary);
+            font-size: 1.5em;
+        }
+
+        .flow-box.compute { background: var(--accent-blue); color: #000; }
+        .flow-box.transfer { background: var(--accent-orange); color: #000; }
+        .flow-box.memory { background: var(--accent-green); color: #000; }
+        .flow-box.wait { background: var(--accent-red); color: #fff; }
+        .flow-box.free { background: var(--accent-purple); color: #fff; }
+
+        .ring-buffer-visual {
+            position: relative;
+            width: 300px;
+            height: 300px;
+            margin: 30px auto;
+        }
+
+        .ring-segment {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            clip-path: polygon(50% 50%, 50% 0%, 100% 0%, 100% 100%, 0% 100%, 0% 0%, 50% 0%);
+        }
+
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        .comparison-table th,
+        .comparison-table td {
+            padding: 12px 15px;
+            text-align: left;
+            border: 1px solid var(--border-color);
+        }
+
+        .comparison-table th {
+            background: var(--bg-code);
+            color: var(--accent-blue);
+        }
+
+        .comparison-table tr:nth-child(even) {
+            background: rgba(0,0,0,0.2);
+        }
+
+        .highlight-box {
+            background: rgba(79, 195, 247, 0.1);
+            border-left: 4px solid var(--accent-blue);
+            padding: 15px 20px;
+            margin: 20px 0;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .warning-box {
+            background: rgba(255, 183, 77, 0.1);
+            border-left: 4px solid var(--accent-orange);
+            padding: 15px 20px;
+            margin: 20px 0;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .phase-badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85em;
+            margin-right: 10px;
+        }
+
+        .phase-2 { background: #2196F3; }
+        .phase-3 { background: #4CAF50; }
+        .phase-4 { background: #FF9800; }
+        .phase-5 { background: #9C27B0; }
+        .phase-6 { background: #F44336; }
+
+        .dependency-graph {
+            display: flex;
+            justify-content: center;
+            padding: 40px 20px;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .dep-node {
+            padding: 20px 30px;
+            border-radius: 10px;
+            text-align: center;
+            position: relative;
+            min-width: 150px;
+        }
+
+        .dep-node .title {
+            font-weight: 700;
+            font-size: 1.1em;
+            margin-bottom: 5px;
+        }
+
+        .dep-node .desc {
+            font-size: 0.8em;
+            color: var(--text-secondary);
+        }
+
+        .timeline {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+
+        .timeline-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .timeline-label {
+            width: 100px;
+            text-align: right;
+            color: var(--text-secondary);
+        }
+
+        .timeline-bar {
+            flex: 1;
+            height: 30px;
+            display: flex;
+            gap: 2px;
+        }
+
+        .timeline-segment {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75em;
+            font-weight: 600;
+            border-radius: 4px;
+        }
+
+        .svg-diagram {
+            width: 100%;
+            max-width: 800px;
+            margin: 20px auto;
+            display: block;
+        }
+
+        .toc {
+            background: var(--bg-code);
+            border-radius: 8px;
+            padding: 20px 30px;
+            margin: 20px 0;
+        }
+
+        .toc h3 {
+            margin-top: 0;
+            color: var(--accent-blue);
+        }
+
+        .toc ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .toc li {
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .toc li:last-child {
+            border-bottom: none;
+        }
+
+        .toc a {
+            color: var(--text-primary);
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .toc a:hover {
+            color: var(--accent-blue);
+        }
+
+        .impact-meter {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 10px 0;
+        }
+
+        .impact-meter .label {
+            width: 80px;
+            font-size: 0.85em;
+            color: var(--text-secondary);
+        }
+
+        .impact-meter .bar {
+            flex: 1;
+            height: 8px;
+            background: var(--bg-code);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .impact-meter .fill {
+            height: 100%;
+            border-radius: 4px;
+        }
+
+        .animation-container {
+            position: relative;
+            height: 200px;
+            background: var(--bg-code);
+            border-radius: 8px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+
+        @keyframes moveRight {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(400%); }
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
+        }
+
+        .layer-block {
+            position: absolute;
+            width: 60px;
+            height: 40px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.8em;
+        }
+    </style>
+</head>
+<body>
+    <div class="notebook">
+        <div class="header">
+            <h1>Memory Optimization Guide</h1>
+            <div class="subtitle">AI-Toolkit Performance Phases 2-6</div>
+        </div>
+
+        <!-- Table of Contents -->
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[1]</span>
+            </div>
+            <div class="cell-content">
+                <div class="toc">
+                    <h3>Table of Contents</h3>
+                    <ul>
+                        <li><a href="#overview"><span class="phase-badge" style="background: #607D8B;">Overview</span> How Everything Fits Together</a></li>
+                        <li><a href="#phase2"><span class="phase-badge phase-2">Phase 2</span> Ring Buffer Allocator</a></li>
+                        <li><a href="#phase3"><span class="phase-badge phase-3">Phase 3</span> Fused Backward Pass</a></li>
+                        <li><a href="#phase4"><span class="phase-badge phase-4">Phase 4</span> Offload Conductor</a></li>
+                        <li><a href="#phase5"><span class="phase-badge phase-5">Phase 5</span> Activation Offloading</a></li>
+                        <li><a href="#phase6"><span class="phase-badge phase-6">Phase 6</span> Accelerate Bypass</a></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Overview Section -->
+        <div class="cell" id="overview">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[2]</span>
+            </div>
+            <div class="cell-content">
+                <h2>The Big Picture: Training Memory Breakdown</h2>
+                <p>When training a large model like Flux (1B+ parameters), VRAM gets consumed by several components:</p>
+
+                <div class="diagram-container">
+                    <p style="text-align: center; color: var(--text-secondary); margin-bottom: 20px;">VRAM Usage During Training (Typical 1B Parameter Model)</p>
+                    <div class="memory-bar">
+                        <div class="memory-segment seg-params" style="width: 15%;">Params<br>2 GB</div>
+                        <div class="memory-segment seg-grads" style="width: 15%;">Gradients<br>2 GB</div>
+                        <div class="memory-segment seg-optimizer" style="width: 40%;">Optimizer<br>8 GB</div>
+                        <div class="memory-segment seg-activations" style="width: 20%;">Activations<br>4 GB</div>
+                        <div class="memory-segment seg-free" style="width: 10%;">Free</div>
+                    </div>
+                    <p style="text-align: center; color: var(--text-secondary); margin-top: 20px;">Total: ~16 GB for a 1B param model in bf16 with AdamW</p>
+                </div>
+
+                <h3>Each Phase Attacks a Different Problem</h3>
+
+                <table class="comparison-table">
+                    <tr>
+                        <th>Phase</th>
+                        <th>Target</th>
+                        <th>Problem</th>
+                        <th>Solution</th>
+                    </tr>
+                    <tr>
+                        <td><span class="phase-badge phase-2">2</span></td>
+                        <td>Allocation Overhead</td>
+                        <td>Constant malloc/free causes fragmentation</td>
+                        <td>Pre-allocate reusable ring buffer</td>
+                    </tr>
+                    <tr>
+                        <td><span class="phase-badge phase-3">3</span></td>
+                        <td>Gradient Memory</td>
+                        <td>All gradients exist simultaneously</td>
+                        <td>Free gradients immediately after use</td>
+                    </tr>
+                    <tr>
+                        <td><span class="phase-badge phase-4">4</span></td>
+                        <td>PCIe Contention</td>
+                        <td>Layers fight for bus bandwidth</td>
+                        <td>Centralized transfer coordinator</td>
+                    </tr>
+                    <tr>
+                        <td><span class="phase-badge phase-5">5</span></td>
+                        <td>Activation Memory</td>
+                        <td>Recompute is slow</td>
+                        <td>Offload to CPU instead</td>
+                    </tr>
+                    <tr>
+                        <td><span class="phase-badge phase-6">6</span></td>
+                        <td>Framework Overhead</td>
+                        <td>Accelerate dispatch cost</td>
+                        <td>Bypass for single-GPU</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <!-- Dependency Graph -->
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type diagram">Diagram</span>
+                <span class="cell-number">[3]</span>
+            </div>
+            <div class="cell-content">
+                <h3>Phase Dependencies</h3>
+                <svg class="svg-diagram" viewBox="0 0 800 250" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Phase 1 (Foundation) -->
+                    <rect x="20" y="100" width="120" height="60" rx="8" fill="#607D8B"/>
+                    <text x="80" y="125" text-anchor="middle" fill="white" font-weight="bold" font-size="14">Phase 1</text>
+                    <text x="80" y="145" text-anchor="middle" fill="white" font-size="11">VRAM Leak Fix</text>
+
+                    <!-- Phase 2 -->
+                    <rect x="180" y="100" width="120" height="60" rx="8" fill="#2196F3"/>
+                    <text x="240" y="125" text-anchor="middle" fill="white" font-weight="bold" font-size="14">Phase 2</text>
+                    <text x="240" y="145" text-anchor="middle" fill="white" font-size="11">Ring Allocator</text>
+
+                    <!-- Arrow 1→2 -->
+                    <path d="M140 130 L170 130" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <!-- Phase 3 -->
+                    <rect x="180" y="20" width="120" height="60" rx="8" fill="#4CAF50"/>
+                    <text x="240" y="45" text-anchor="middle" fill="white" font-weight="bold" font-size="14">Phase 3</text>
+                    <text x="240" y="65" text-anchor="middle" fill="white" font-size="11">Fused Backward</text>
+
+                    <!-- Arrow 1→3 -->
+                    <path d="M140 115 L170 65" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <!-- Phase 4 -->
+                    <rect x="340" y="100" width="120" height="60" rx="8" fill="#FF9800"/>
+                    <text x="400" y="125" text-anchor="middle" fill="black" font-weight="bold" font-size="14">Phase 4</text>
+                    <text x="400" y="145" text-anchor="middle" fill="black" font-size="11">Offload Conductor</text>
+
+                    <!-- Arrow 2→4 -->
+                    <path d="M300 130 L330 130" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <!-- Phase 5 -->
+                    <rect x="500" y="100" width="120" height="60" rx="8" fill="#9C27B0"/>
+                    <text x="560" y="125" text-anchor="middle" fill="white" font-weight="bold" font-size="14">Phase 5</text>
+                    <text x="560" y="145" text-anchor="middle" fill="white" font-size="11">Activation Offload</text>
+
+                    <!-- Arrow 4→5 -->
+                    <path d="M460 130 L490 130" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <!-- Phase 6 (Independent) -->
+                    <rect x="660" y="100" width="120" height="60" rx="8" fill="#F44336"/>
+                    <text x="720" y="125" text-anchor="middle" fill="white" font-weight="bold" font-size="14">Phase 6</text>
+                    <text x="720" y="145" text-anchor="middle" fill="white" font-size="11">Accel. Bypass</text>
+
+                    <!-- Independent label -->
+                    <text x="720" y="185" text-anchor="middle" fill="#666" font-size="10">(Independent)</text>
+
+                    <!-- Arrowhead marker -->
+                    <defs>
+                        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                            <polygon points="0 0, 10 3.5, 0 7" fill="#666"/>
+                        </marker>
+                    </defs>
+                </svg>
+                <p style="text-align: center; color: var(--text-secondary);">Arrows show dependencies. Phase 6 can be implemented at any time.</p>
+            </div>
+        </div>
+
+        <!-- ============================================ -->
+        <!-- PHASE 2: Ring Buffer Allocator -->
+        <!-- ============================================ -->
+        <div class="cell" id="phase2">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[4]</span>
+            </div>
+            <div class="cell-content">
+                <h2><span class="phase-badge phase-2">Phase 2</span> Ring Buffer Allocator</h2>
+
+                <div class="impact-meter">
+                    <span class="label">Memory</span>
+                    <div class="bar"><div class="fill" style="width: 60%; background: var(--accent-blue);"></div></div>
+                </div>
+                <div class="impact-meter">
+                    <span class="label">Speed</span>
+                    <div class="bar"><div class="fill" style="width: 40%; background: var(--accent-green);"></div></div>
+                </div>
+                <div class="impact-meter">
+                    <span class="label">Complexity</span>
+                    <div class="bar"><div class="fill" style="width: 50%; background: var(--accent-orange);"></div></div>
+                </div>
+
+                <h3>The Problem: Memory Fragmentation</h3>
+                <p>When bouncing layers between CPU and GPU, each transfer allocates new GPU memory:</p>
+
+                <div class="diagram-container">
+                    <p style="color: var(--accent-red); font-weight: 600;">Without Ring Allocator:</p>
+                    <div style="display: flex; gap: 10px; margin: 15px 0; flex-wrap: wrap;">
+                        <div style="padding: 10px; background: var(--accent-blue); color: #000; border-radius: 4px;">malloc(Layer1)</div>
+                        <span style="color: var(--text-secondary);">→</span>
+                        <div style="padding: 10px; background: var(--accent-blue); color: #000; border-radius: 4px;">malloc(Layer2)</div>
+                        <span style="color: var(--text-secondary);">→</span>
+                        <div style="padding: 10px; background: var(--accent-red); color: #fff; border-radius: 4px;">free(Layer1)</div>
+                        <span style="color: var(--text-secondary);">→</span>
+                        <div style="padding: 10px; background: var(--accent-blue); color: #000; border-radius: 4px;">malloc(Layer3)</div>
+                        <span style="color: var(--text-secondary);">→ ...</span>
+                    </div>
+                    <p style="color: var(--text-secondary);">Each malloc/free cycle fragments VRAM over thousands of steps.</p>
+                </div>
+
+                <h3>The Solution: Pre-allocated Ring Buffer</h3>
+                <p>Allocate a fixed buffer once, then slice views from it:</p>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type diagram">Diagram</span>
+                <span class="cell-number">[5]</span>
+            </div>
+            <div class="cell-content">
+                <h4>Ring Buffer Concept</h4>
+                <svg class="svg-diagram" viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Outer ring -->
+                    <circle cx="200" cy="150" r="120" fill="none" stroke="#333" stroke-width="40"/>
+
+                    <!-- Allocated segments -->
+                    <path d="M200 30 A120 120 0 0 1 320 150" fill="none" stroke="#2196F3" stroke-width="38"/>
+                    <path d="M320 150 A120 120 0 0 1 200 270" fill="none" stroke="#4CAF50" stroke-width="38"/>
+                    <path d="M200 270 A120 120 0 0 1 100 200" fill="none" stroke="#FF9800" stroke-width="38"/>
+
+                    <!-- Labels on ring -->
+                    <text x="270" y="80" fill="white" font-weight="bold" font-size="12">Layer 1</text>
+                    <text x="300" y="200" fill="white" font-weight="bold" font-size="12">Layer 2</text>
+                    <text x="100" y="230" fill="white" font-weight="bold" font-size="12">Layer 3</text>
+
+                    <!-- Center text -->
+                    <text x="200" y="145" text-anchor="middle" fill="var(--text-secondary)" font-size="14">Ring Buffer</text>
+                    <text x="200" y="165" text-anchor="middle" fill="var(--text-secondary)" font-size="12">~2 GB</text>
+
+                    <!-- Pointers -->
+                    <line x1="200" y1="150" x2="200" y2="35" stroke="#81c784" stroke-width="3"/>
+                    <circle cx="200" cy="35" r="6" fill="#81c784"/>
+                    <text x="200" y="15" text-anchor="middle" fill="#81c784" font-size="11">alloc_start</text>
+
+                    <line x1="200" y1="150" x2="95" y2="185" stroke="#e57373" stroke-width="3"/>
+                    <circle cx="95" cy="185" r="6" fill="#e57373"/>
+                    <text x="55" y="180" text-anchor="middle" fill="#e57373" font-size="11">alloc_end</text>
+
+                    <!-- Explanation box -->
+                    <rect x="400" y="40" width="280" height="220" rx="8" fill="var(--bg-code)"/>
+                    <text x="420" y="70" fill="var(--accent-blue)" font-weight="bold" font-size="14">How it works:</text>
+                    <text x="420" y="100" fill="var(--text-primary)" font-size="12">1. Pre-allocate one large buffer</text>
+                    <text x="420" y="125" fill="var(--text-primary)" font-size="12">2. Slice views for each layer</text>
+                    <text x="420" y="150" fill="var(--text-primary)" font-size="12">3. Advance pointer after allocate</text>
+                    <text x="420" y="175" fill="var(--text-primary)" font-size="12">4. When layer freed, reclaim space</text>
+                    <text x="420" y="200" fill="var(--text-primary)" font-size="12">5. Wrap around when reaching end</text>
+                    <text x="420" y="235" fill="var(--accent-green)" font-size="12">✓ Zero malloc after warmup!</text>
+                </svg>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type code">Code</span>
+                <span class="cell-number">[6]</span>
+            </div>
+            <div class="cell-content">
+                <h4>Core Ring Buffer Implementation</h4>
+<pre><code><span class="keyword">class</span> <span class="function">RingBufferAllocator</span>:
+    <span class="string">"""Pre-allocated ring buffer for layer weight transfers."""</span>
+
+    <span class="keyword">def</span> <span class="function">__init__</span>(self, device, target_bytes, num_cache_tensors=<span class="number">4</span>):
+        self.device = device
+        <span class="comment"># Split into multiple tensors to reduce fragmentation</span>
+        self.cache_tensor_size = target_bytes // num_cache_tensors
+        self.cache_tensors = [<span class="keyword">None</span>] * num_cache_tensors  <span class="comment"># Lazy allocation</span>
+
+        <span class="comment"># Ring buffer tracking</span>
+        self.allocation_start = <span class="number">0</span>  <span class="comment"># First live byte</span>
+        self.allocation_end = <span class="number">0</span>    <span class="comment"># Next free byte</span>
+
+    <span class="keyword">def</span> <span class="function">allocate_like</span>(self, source_tensor, layer_index=<span class="number">-1</span>):
+        <span class="string">"""Get a view into the ring buffer matching source shape/dtype."""</span>
+        num_bytes = source_tensor.numel() * source_tensor.element_size()
+
+        <span class="comment"># Check for wrap-around overwrite</span>
+        <span class="keyword">if</span> self._would_overwrite_live(num_bytes):
+            <span class="keyword">return</span> <span class="keyword">None</span>  <span class="comment"># Fallback to dynamic allocation</span>
+
+        <span class="comment"># Slice a view from the buffer</span>
+        cache_idx = self.allocation_end // self.cache_tensor_size
+        offset = self.allocation_end % self.cache_tensor_size
+
+        byte_view = self.cache_tensors[cache_idx][offset:offset + num_bytes]
+        <span class="keyword">return</span> byte_view.view(source_tensor.dtype).view(source_tensor.shape)
+
+    <span class="keyword">def</span> <span class="function">deallocate_layer</span>(self, layer_index):
+        <span class="string">"""Mark layer's space as reclaimable."""</span>
+        <span class="comment"># Advances allocation_start when oldest allocation freed</span>
+        ...</code></pre>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[7]</span>
+            </div>
+            <div class="cell-content">
+                <div class="highlight-box">
+                    <strong>Key Insight:</strong> By pre-allocating a fixed buffer, we eliminate thousands of CUDA malloc/free calls per epoch. After the first epoch, memory usage becomes completely predictable.
+                </div>
+
+                <h4>Before vs After</h4>
+                <table class="comparison-table">
+                    <tr>
+                        <th>Metric</th>
+                        <th>Without Ring Allocator</th>
+                        <th>With Ring Allocator</th>
+                    </tr>
+                    <tr>
+                        <td>CUDA malloc calls</td>
+                        <td>~10,000/epoch</td>
+                        <td>~50 (warmup only)</td>
+                    </tr>
+                    <tr>
+                        <td>Memory fragmentation</td>
+                        <td>20-40%</td>
+                        <td>&lt;5%</td>
+                    </tr>
+                    <tr>
+                        <td>Peak VRAM stability</td>
+                        <td>Variable</td>
+                        <td>Constant</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <!-- ============================================ -->
+        <!-- PHASE 3: Fused Backward Pass -->
+        <!-- ============================================ -->
+        <div class="cell" id="phase3">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[8]</span>
+            </div>
+            <div class="cell-content">
+                <h2><span class="phase-badge phase-3">Phase 3</span> Fused Backward Pass</h2>
+
+                <div class="impact-meter">
+                    <span class="label">Memory</span>
+                    <div class="bar"><div class="fill" style="width: 80%; background: var(--accent-green);"></div></div>
+                </div>
+                <div class="impact-meter">
+                    <span class="label">Speed</span>
+                    <div class="bar"><div class="fill" style="width: 20%; background: var(--accent-green);"></div></div>
+                </div>
+                <div class="impact-meter">
+                    <span class="label">Complexity</span>
+                    <div class="bar"><div class="fill" style="width: 60%; background: var(--accent-orange);"></div></div>
+                </div>
+
+                <h3>The Problem: All Gradients Coexist</h3>
+                <p>In standard training, the backward pass computes ALL gradients before the optimizer step:</p>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type diagram">Diagram</span>
+                <span class="cell-number">[9]</span>
+            </div>
+            <div class="cell-content">
+                <h4>Standard Backward: Gradients Accumulate</h4>
+                <svg class="svg-diagram" viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Timeline -->
+                    <line x1="50" y1="100" x2="750" y2="100" stroke="#444" stroke-width="2"/>
+
+                    <!-- Backward phase -->
+                    <rect x="60" y="60" width="400" height="30" rx="4" fill="#FF9800"/>
+                    <text x="260" y="80" text-anchor="middle" fill="black" font-weight="bold" font-size="12">backward() - compute all gradients</text>
+
+                    <!-- Optimizer phase -->
+                    <rect x="470" y="60" width="120" height="30" rx="4" fill="#4CAF50"/>
+                    <text x="530" y="80" text-anchor="middle" fill="white" font-weight="bold" font-size="12">optimizer.step()</text>
+
+                    <!-- Zero grad -->
+                    <rect x="600" y="60" width="100" height="30" rx="4" fill="#F44336"/>
+                    <text x="650" y="80" text-anchor="middle" fill="white" font-weight="bold" font-size="12">zero_grad()</text>
+
+                    <!-- Memory bars -->
+                    <text x="50" y="140" fill="var(--text-secondary)" font-size="11">Gradient Memory:</text>
+
+                    <!-- Growing gradient memory -->
+                    <rect x="60" y="150" width="50" height="20" fill="#FF9800" opacity="0.3"/>
+                    <rect x="110" y="150" width="100" height="20" fill="#FF9800" opacity="0.5"/>
+                    <rect x="210" y="150" width="150" height="20" fill="#FF9800" opacity="0.7"/>
+                    <rect x="360" y="150" width="100" height="20" fill="#FF9800" opacity="1"/>
+
+                    <!-- Peak label -->
+                    <text x="410" y="145" fill="#FF9800" font-weight="bold" font-size="11">PEAK: 2GB</text>
+
+                    <!-- Memory during optimizer -->
+                    <rect x="470" y="150" width="120" height="20" fill="#FF9800"/>
+
+                    <!-- Memory freed -->
+                    <rect x="600" y="150" width="100" height="20" fill="#333"/>
+                    <text x="650" y="165" text-anchor="middle" fill="var(--text-secondary)" font-size="10">freed</text>
+                </svg>
+                <p style="text-align: center; color: var(--text-secondary);">All ~2GB of gradients must exist simultaneously before optimizer can run</p>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type diagram">Diagram</span>
+                <span class="cell-number">[10]</span>
+            </div>
+            <div class="cell-content">
+                <h4>Fused Backward: Free Immediately</h4>
+                <svg class="svg-diagram" viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Timeline -->
+                    <line x1="50" y1="100" x2="750" y2="100" stroke="#444" stroke-width="2"/>
+
+                    <!-- Interleaved blocks -->
+                    <rect x="60" y="60" width="80" height="30" rx="4" fill="#FF9800"/>
+                    <text x="100" y="80" text-anchor="middle" fill="black" font-size="10">grad L4</text>
+
+                    <rect x="145" y="60" width="40" height="30" rx="4" fill="#4CAF50"/>
+                    <text x="165" y="80" text-anchor="middle" fill="white" font-size="9">step</text>
+
+                    <rect x="190" y="60" width="80" height="30" rx="4" fill="#FF9800"/>
+                    <text x="230" y="80" text-anchor="middle" fill="black" font-size="10">grad L3</text>
+
+                    <rect x="275" y="60" width="40" height="30" rx="4" fill="#4CAF50"/>
+                    <text x="295" y="80" text-anchor="middle" fill="white" font-size="9">step</text>
+
+                    <rect x="320" y="60" width="80" height="30" rx="4" fill="#FF9800"/>
+                    <text x="360" y="80" text-anchor="middle" fill="black" font-size="10">grad L2</text>
+
+                    <rect x="405" y="60" width="40" height="30" rx="4" fill="#4CAF50"/>
+                    <text x="425" y="80" text-anchor="middle" fill="white" font-size="9">step</text>
+
+                    <rect x="450" y="60" width="80" height="30" rx="4" fill="#FF9800"/>
+                    <text x="490" y="80" text-anchor="middle" fill="black" font-size="10">grad L1</text>
+
+                    <rect x="535" y="60" width="40" height="30" rx="4" fill="#4CAF50"/>
+                    <text x="555" y="80" text-anchor="middle" fill="white" font-size="9">step</text>
+
+                    <!-- Memory bars - constant low -->
+                    <text x="50" y="140" fill="var(--text-secondary)" font-size="11">Gradient Memory:</text>
+
+                    <rect x="60" y="150" width="80" height="20" fill="#FF9800"/>
+                    <rect x="145" y="150" width="40" height="20" fill="#333"/>
+                    <rect x="190" y="150" width="80" height="20" fill="#FF9800"/>
+                    <rect x="275" y="150" width="40" height="20" fill="#333"/>
+                    <rect x="320" y="150" width="80" height="20" fill="#FF9800"/>
+                    <rect x="405" y="150" width="40" height="20" fill="#333"/>
+                    <rect x="450" y="150" width="80" height="20" fill="#FF9800"/>
+                    <rect x="535" y="150" width="40" height="20" fill="#333"/>
+
+                    <!-- Peak label -->
+                    <text x="650" y="165" fill="#4CAF50" font-weight="bold" font-size="11">PEAK: ~100MB</text>
+                </svg>
+                <p style="text-align: center; color: var(--text-secondary);">Only one layer's gradients exist at a time → 95% reduction in gradient memory!</p>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type code">Code</span>
+                <span class="cell-number">[11]</span>
+            </div>
+            <div class="cell-content">
+                <h4>The Magic: Post-Accumulate Gradient Hook</h4>
+<pre><code><span class="keyword">def</span> <span class="function">attach</span>(self):
+    <span class="string">"""Register hooks on all trainable parameters."""</span>
+    <span class="keyword">for</span> param_group <span class="keyword">in</span> self.optimizer.param_groups:
+        <span class="keyword">for</span> param <span class="keyword">in</span> param_group[<span class="string">'params'</span>]:
+            <span class="keyword">if not</span> param.requires_grad:
+                <span class="keyword">continue</span>
+
+            <span class="comment"># This hook fires immediately after each gradient is computed</span>
+            <span class="keyword">def</span> <span class="function">hook</span>(tensor):
+                <span class="comment"># 1. Apply gradient clipping (per-parameter)</span>
+                <span class="keyword">if</span> self.clip_grad_norm:
+                    grad_norm = tensor.grad.norm(<span class="number">2</span>)
+                    <span class="keyword">if</span> grad_norm > self.clip_grad_norm:
+                        tensor.grad.mul_(self.clip_grad_norm / grad_norm)
+
+                <span class="comment"># 2. Run optimizer step for THIS parameter only</span>
+                self._step_parameter(tensor, param_group)
+
+                <span class="comment"># 3. Immediately free the gradient!</span>
+                tensor.grad = <span class="keyword">None</span>
+
+            <span class="comment"># PyTorch 2.0+ API for gradient hooks</span>
+            param.<span class="function">register_post_accumulate_grad_hook</span>(hook)</code></pre>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[12]</span>
+            </div>
+            <div class="cell-content">
+                <div class="warning-box">
+                    <strong>Important Limitation:</strong> Fused backward does NOT save memory when using <code>gradient_accumulation_steps > 1</code>. Gradients must still accumulate across micro-batches before the optimizer step.
+                </div>
+
+                <h4>When to Use</h4>
+                <table class="comparison-table">
+                    <tr>
+                        <th>Scenario</th>
+                        <th>Recommendation</th>
+                    </tr>
+                    <tr>
+                        <td><code>gradient_accumulation_steps: 1</code></td>
+                        <td style="color: var(--accent-green);">✓ Use fused backward</td>
+                    </tr>
+                    <tr>
+                        <td><code>gradient_accumulation_steps > 1</code></td>
+                        <td style="color: var(--accent-orange);">✗ No memory benefit</td>
+                    </tr>
+                    <tr>
+                        <td>Large batch fits in VRAM</td>
+                        <td style="color: var(--accent-green);">✓ Use fused backward</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <!-- ============================================ -->
+        <!-- PHASE 4: Offload Conductor -->
+        <!-- ============================================ -->
+        <div class="cell" id="phase4">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[13]</span>
+            </div>
+            <div class="cell-content">
+                <h2><span class="phase-badge phase-4">Phase 4</span> Offload Conductor</h2>
+
+                <div class="impact-meter">
+                    <span class="label">Memory</span>
+                    <div class="bar"><div class="fill" style="width: 70%; background: var(--accent-orange);"></div></div>
+                </div>
+                <div class="impact-meter">
+                    <span class="label">Speed</span>
+                    <div class="bar"><div class="fill" style="width: 60%; background: var(--accent-green);"></div></div>
+                </div>
+                <div class="impact-meter">
+                    <span class="label">Complexity</span>
+                    <div class="bar"><div class="fill" style="width: 80%; background: var(--accent-red);"></div></div>
+                </div>
+
+                <h3>The Problem: Uncoordinated Transfers</h3>
+                <p>Large models don't fit in VRAM. Current solution: "bounce" layers between CPU and GPU. But each layer independently fights for the PCIe bus:</p>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type diagram">Diagram</span>
+                <span class="cell-number">[14]</span>
+            </div>
+            <div class="cell-content">
+                <h4>Without Conductor: Chaos</h4>
+                <svg class="svg-diagram" viewBox="0 0 800 250" xmlns="http://www.w3.org/2000/svg">
+                    <!-- GPU Box -->
+                    <rect x="50" y="30" width="200" height="190" rx="8" fill="none" stroke="#4CAF50" stroke-width="2"/>
+                    <text x="150" y="55" text-anchor="middle" fill="#4CAF50" font-weight="bold" font-size="14">GPU (VRAM)</text>
+
+                    <!-- CPU Box -->
+                    <rect x="550" y="30" width="200" height="190" rx="8" fill="none" stroke="#2196F3" stroke-width="2"/>
+                    <text x="650" y="55" text-anchor="middle" fill="#2196F3" font-weight="bold" font-size="14">CPU (RAM)</text>
+
+                    <!-- PCIe Bus -->
+                    <rect x="280" y="100" width="240" height="50" rx="4" fill="#333"/>
+                    <text x="400" y="130" text-anchor="middle" fill="var(--text-secondary)" font-size="12">PCIe Bus (shared)</text>
+
+                    <!-- Chaotic arrows -->
+                    <path d="M250 80 L280 110" stroke="#FF9800" stroke-width="3" marker-end="url(#arrow-orange)"/>
+                    <path d="M250 120 L280 120" stroke="#F44336" stroke-width="3" marker-end="url(#arrow-red)"/>
+                    <path d="M250 160 L280 135" stroke="#9C27B0" stroke-width="3" marker-end="url(#arrow-purple)"/>
+
+                    <path d="M520 110 L550 80" stroke="#FF9800" stroke-width="3" marker-end="url(#arrow-orange)"/>
+                    <path d="M520 130 L550 140" stroke="#4CAF50" stroke-width="3" marker-end="url(#arrow-green)"/>
+                    <path d="M520 140 L550 180" stroke="#2196F3" stroke-width="3" marker-end="url(#arrow-blue)"/>
+
+                    <!-- Congestion symbol -->
+                    <text x="400" y="90" text-anchor="middle" fill="#F44336" font-weight="bold" font-size="20">⚠ CONGESTION</text>
+
+                    <!-- Layer labels -->
+                    <rect x="70" y="80" width="60" height="25" rx="4" fill="#FF9800"/>
+                    <text x="100" y="97" text-anchor="middle" fill="black" font-size="10">Layer 3</text>
+
+                    <rect x="140" y="110" width="60" height="25" rx="4" fill="#F44336"/>
+                    <text x="170" y="127" text-anchor="middle" fill="white" font-size="10">Layer 5</text>
+
+                    <rect x="70" y="140" width="60" height="25" rx="4" fill="#9C27B0"/>
+                    <text x="100" y="157" text-anchor="middle" fill="white" font-size="10">Layer 8</text>
+
+                    <!-- Markers -->
+                    <defs>
+                        <marker id="arrow-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                            <polygon points="0 0, 10 3.5, 0 7" fill="#FF9800"/>
+                        </marker>
+                        <marker id="arrow-red" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                            <polygon points="0 0, 10 3.5, 0 7" fill="#F44336"/>
+                        </marker>
+                        <marker id="arrow-purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                            <polygon points="0 0, 10 3.5, 0 7" fill="#9C27B0"/>
+                        </marker>
+                        <marker id="arrow-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                            <polygon points="0 0, 10 3.5, 0 7" fill="#4CAF50"/>
+                        </marker>
+                        <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                            <polygon points="0 0, 10 3.5, 0 7" fill="#2196F3"/>
+                        </marker>
+                    </defs>
+                </svg>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type diagram">Diagram</span>
+                <span class="cell-number">[15]</span>
+            </div>
+            <div class="cell-content">
+                <h4>With Conductor: Coordinated Flow</h4>
+                <svg class="svg-diagram" viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Conductor -->
+                    <rect x="320" y="20" width="160" height="40" rx="8" fill="#FF9800"/>
+                    <text x="400" y="45" text-anchor="middle" fill="black" font-weight="bold" font-size="14">🎭 Conductor</text>
+
+                    <!-- Three streams -->
+                    <rect x="100" y="80" width="600" height="30" rx="4" fill="#4CAF50" opacity="0.2"/>
+                    <text x="110" y="100" fill="#4CAF50" font-size="11">Compute Stream</text>
+
+                    <rect x="100" y="120" width="600" height="30" rx="4" fill="#2196F3" opacity="0.2"/>
+                    <text x="110" y="140" fill="#2196F3" font-size="11">Layer Transfer Stream</text>
+
+                    <rect x="100" y="160" width="600" height="30" rx="4" fill="#9C27B0" opacity="0.2"/>
+                    <text x="110" y="180" fill="#9C27B0" font-size="11">Activation Transfer Stream</text>
+
+                    <!-- Compute blocks -->
+                    <rect x="250" y="82" width="80" height="26" rx="4" fill="#4CAF50"/>
+                    <text x="290" y="100" text-anchor="middle" fill="white" font-size="10">Layer 1</text>
+
+                    <rect x="340" y="82" width="80" height="26" rx="4" fill="#4CAF50"/>
+                    <text x="380" y="100" text-anchor="middle" fill="white" font-size="10">Layer 2</text>
+
+                    <rect x="430" y="82" width="80" height="26" rx="4" fill="#4CAF50"/>
+                    <text x="470" y="100" text-anchor="middle" fill="white" font-size="10">Layer 3</text>
+
+                    <rect x="520" y="82" width="80" height="26" rx="4" fill="#4CAF50"/>
+                    <text x="560" y="100" text-anchor="middle" fill="white" font-size="10">Layer 4</text>
+
+                    <!-- Transfer blocks (overlapped!) -->
+                    <rect x="250" y="122" width="60" height="26" rx="4" fill="#2196F3"/>
+                    <text x="280" y="140" text-anchor="middle" fill="white" font-size="9">Load L2</text>
+
+                    <rect x="340" y="122" width="60" height="26" rx="4" fill="#2196F3"/>
+                    <text x="370" y="140" text-anchor="middle" fill="white" font-size="9">Load L3</text>
+
+                    <rect x="430" y="122" width="60" height="26" rx="4" fill="#2196F3"/>
+                    <text x="460" y="140" text-anchor="middle" fill="white" font-size="9">Load L4</text>
+
+                    <rect x="520" y="122" width="60" height="26" rx="4" fill="#2196F3"/>
+                    <text x="550" y="140" text-anchor="middle" fill="white" font-size="9">Load L5</text>
+
+                    <!-- Key insight -->
+                    <rect x="150" y="210" width="500" height="50" rx="8" fill="var(--bg-code)"/>
+                    <text x="400" y="235" text-anchor="middle" fill="var(--accent-green)" font-weight="bold" font-size="13">
+                        ✓ Compute and Transfer happen simultaneously!
+                    </text>
+                    <text x="400" y="250" text-anchor="middle" fill="var(--text-secondary)" font-size="11">
+                        GPU never waits for data — next layer loading while current computes
+                    </text>
+                </svg>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type code">Code</span>
+                <span class="cell-number">[16]</span>
+            </div>
+            <div class="cell-content">
+                <h4>Pre-computed Offload Strategy</h4>
+<pre><code><span class="keyword">class</span> <span class="function">OffloadStrategy</span>:
+    <span class="string">"""Pre-computes which layers to load at each step."""</span>
+
+    <span class="keyword">def</span> <span class="function">__init__</span>(self, layers, layer_offload_fraction):
+        <span class="comment"># Calculate byte budget for GPU</span>
+        total_bytes = sum(get_layer_bytes(l) <span class="keyword">for</span> l <span class="keyword">in</span> layers)
+        target_loaded = int(total_bytes * (<span class="number">1.0</span> - layer_offload_fraction))
+
+        <span class="comment"># Pre-compute loaded sets for each scenario:</span>
+        <span class="comment"># - Forward pass (need upcoming layers)</span>
+        <span class="comment"># - Backward pass (need previous layers)</span>
+        <span class="comment"># - Forward→Backward transition</span>
+
+        self.forward_backward_loaded = [
+            self._get_optimal_layers(i, target_loaded, is_forward=<span class="keyword">True</span>)
+            <span class="keyword">for</span> i <span class="keyword">in</span> range(len(layers))
+        ]
+
+    <span class="keyword">def</span> <span class="function">get_schedule</span>(self, layer_index, is_forward, loaded_layers):
+        <span class="string">"""Return which layers to load/offload NOW."""</span>
+        target = set(self.forward_backward_loaded[layer_index])
+
+        <span class="keyword">return</span> OffloadSchedule(
+            layers_to_load=sorted(target - loaded_layers),
+            layers_to_offload=sorted(loaded_layers - target)
+        )</code></pre>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type diagram">Diagram</span>
+                <span class="cell-number">[17]</span>
+            </div>
+            <div class="cell-content">
+                <h4>Three CUDA Streams</h4>
+                <div class="diagram-container">
+                    <div class="timeline">
+                        <div class="timeline-row">
+                            <span class="timeline-label" style="color: #4CAF50;">Compute</span>
+                            <div class="timeline-bar">
+                                <div class="timeline-segment" style="flex: 1; background: #4CAF50; color: #000;">L1 forward</div>
+                                <div class="timeline-segment" style="flex: 1; background: #4CAF50; color: #000;">L2 forward</div>
+                                <div class="timeline-segment" style="flex: 1; background: #4CAF50; color: #000;">L3 forward</div>
+                                <div class="timeline-segment" style="flex: 1; background: #388E3C; color: #fff;">L3 backward</div>
+                                <div class="timeline-segment" style="flex: 1; background: #388E3C; color: #fff;">L2 backward</div>
+                            </div>
+                        </div>
+                        <div class="timeline-row">
+                            <span class="timeline-label" style="color: #2196F3;">Layer Xfer</span>
+                            <div class="timeline-bar">
+                                <div class="timeline-segment" style="flex: 0.8; background: #2196F3; color: #fff;">↑L2</div>
+                                <div class="timeline-segment" style="flex: 0.2; background: transparent;"></div>
+                                <div class="timeline-segment" style="flex: 0.8; background: #2196F3; color: #fff;">↑L3</div>
+                                <div class="timeline-segment" style="flex: 0.2; background: transparent;"></div>
+                                <div class="timeline-segment" style="flex: 0.6; background: #1976D2; color: #fff;">↓L1</div>
+                                <div class="timeline-segment" style="flex: 0.4; background: transparent;"></div>
+                                <div class="timeline-segment" style="flex: 0.8; background: #2196F3; color: #fff;">↑L2</div>
+                                <div class="timeline-segment" style="flex: 1; background: #1976D2; color: #fff;">↓L3</div>
+                            </div>
+                        </div>
+                        <div class="timeline-row">
+                            <span class="timeline-label" style="color: #9C27B0;">Activation</span>
+                            <div class="timeline-bar">
+                                <div class="timeline-segment" style="flex: 0.5; background: transparent;"></div>
+                                <div class="timeline-segment" style="flex: 0.5; background: #9C27B0; color: #fff;">↓A1</div>
+                                <div class="timeline-segment" style="flex: 0.5; background: transparent;"></div>
+                                <div class="timeline-segment" style="flex: 0.5; background: #9C27B0; color: #fff;">↓A2</div>
+                                <div class="timeline-segment" style="flex: 0.5; background: transparent;"></div>
+                                <div class="timeline-segment" style="flex: 0.5; background: #9C27B0; color: #fff;">↓A3</div>
+                                <div class="timeline-segment" style="flex: 0.5; background: #7B1FA2; color: #fff;">↑A3</div>
+                                <div class="timeline-segment" style="flex: 0.5; background: transparent;"></div>
+                                <div class="timeline-segment" style="flex: 0.5; background: #7B1FA2; color: #fff;">↑A2</div>
+                            </div>
+                        </div>
+                    </div>
+                    <p style="margin-top: 15px; color: var(--text-secondary); font-size: 0.9em;">
+                        ↑ = Load to GPU &nbsp;&nbsp; ↓ = Offload to CPU &nbsp;&nbsp; L = Layer weights &nbsp;&nbsp; A = Activations
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[18]</span>
+            </div>
+            <div class="cell-content">
+                <div class="highlight-box">
+                    <strong>Key Configuration:</strong>
+<pre style="margin: 10px 0;"><code>memory_management:
+  use_offload_conductor: true
+  layer_offload_fraction: 0.5  <span class="comment"># 50% on GPU, 50% on CPU</span></code></pre>
+                    <p style="margin: 0;">Higher fraction = more offloading = less VRAM but more PCIe traffic</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ============================================ -->
+        <!-- PHASE 5: Activation Offloading -->
+        <!-- ============================================ -->
+        <div class="cell" id="phase5">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[19]</span>
+            </div>
+            <div class="cell-content">
+                <h2><span class="phase-badge phase-5">Phase 5</span> Activation Offloading</h2>
+
+                <div class="impact-meter">
+                    <span class="label">Memory</span>
+                    <div class="bar"><div class="fill" style="width: 60%; background: var(--accent-purple);"></div></div>
+                </div>
+                <div class="impact-meter">
+                    <span class="label">Speed</span>
+                    <div class="bar"><div class="fill" style="width: 70%; background: var(--accent-green);"></div></div>
+                </div>
+                <div class="impact-meter">
+                    <span class="label">Complexity</span>
+                    <div class="bar"><div class="fill" style="width: 70%; background: var(--accent-orange);"></div></div>
+                </div>
+
+                <h3>The Problem: Recompute vs Offload</h3>
+                <p>Standard gradient checkpointing saves memory by <strong>recomputing</strong> activations during backward. But recompute is slow for complex attention layers.</p>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type diagram">Diagram</span>
+                <span class="cell-number">[20]</span>
+            </div>
+            <div class="cell-content">
+                <h4>Two Strategies for Activation Memory</h4>
+                <svg class="svg-diagram" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Strategy 1: Recompute -->
+                    <rect x="30" y="30" width="350" height="130" rx="8" fill="var(--bg-code)"/>
+                    <text x="205" y="55" text-anchor="middle" fill="#F44336" font-weight="bold" font-size="14">Strategy 1: Gradient Checkpointing (Recompute)</text>
+
+                    <text x="50" y="85" fill="var(--text-primary)" font-size="12">Forward: Compute activations, then discard</text>
+                    <text x="50" y="105" fill="var(--text-primary)" font-size="12">Backward: Recompute activations on-the-fly</text>
+
+                    <text x="50" y="135" fill="var(--accent-green)" font-size="11">✓ Saves VRAM (activations not stored)</text>
+                    <text x="50" y="150" fill="var(--accent-red)" font-size="11">✗ Slower (double compute)</text>
+
+                    <!-- Strategy 2: Offload -->
+                    <rect x="420" y="30" width="350" height="130" rx="8" fill="var(--bg-code)"/>
+                    <text x="595" y="55" text-anchor="middle" fill="#4CAF50" font-weight="bold" font-size="14">Strategy 2: Activation Offloading</text>
+
+                    <text x="440" y="85" fill="var(--text-primary)" font-size="12">Forward: Save activations to CPU RAM</text>
+                    <text x="440" y="105" fill="var(--text-primary)" font-size="12">Backward: Load activations back from CPU</text>
+
+                    <text x="440" y="135" fill="var(--accent-green)" font-size="11">✓ Saves VRAM (same as recompute)</text>
+                    <text x="440" y="150" fill="var(--accent-green)" font-size="11">✓ Faster (PCIe &gt; recompute on PCIe 4+)</text>
+
+                    <!-- Comparison chart -->
+                    <text x="400" y="195" text-anchor="middle" fill="var(--accent-blue)" font-weight="bold" font-size="14">When to Use Each?</text>
+
+                    <rect x="100" y="210" width="250" height="90" rx="6" fill="#F44336" opacity="0.2"/>
+                    <text x="225" y="235" text-anchor="middle" fill="#F44336" font-weight="bold" font-size="12">Recompute Better When:</text>
+                    <text x="225" y="255" text-anchor="middle" fill="var(--text-primary)" font-size="11">• PCIe 3.0 (slower bus)</text>
+                    <text x="225" y="275" text-anchor="middle" fill="var(--text-primary)" font-size="11">• Simple layers (fast to recompute)</text>
+                    <text x="225" y="295" text-anchor="middle" fill="var(--text-primary)" font-size="11">• Limited CPU RAM</text>
+
+                    <rect x="450" y="210" width="250" height="90" rx="6" fill="#4CAF50" opacity="0.2"/>
+                    <text x="575" y="235" text-anchor="middle" fill="#4CAF50" font-weight="bold" font-size="12">Offload Better When:</text>
+                    <text x="575" y="255" text-anchor="middle" fill="var(--text-primary)" font-size="11">• PCIe 4.0/5.0 (fast bus)</text>
+                    <text x="575" y="275" text-anchor="middle" fill="var(--text-primary)" font-size="11">• Complex attention (slow recompute)</text>
+                    <text x="575" y="295" text-anchor="middle" fill="var(--text-primary)" font-size="11">• Abundant CPU RAM</text>
+                </svg>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type diagram">Diagram</span>
+                <span class="cell-number">[21]</span>
+            </div>
+            <div class="cell-content">
+                <h4>Activation Flow with Offloading</h4>
+                <svg class="svg-diagram" viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Forward pass -->
+                    <text x="100" y="30" fill="var(--accent-blue)" font-weight="bold" font-size="14">Forward Pass</text>
+
+                    <rect x="100" y="45" width="80" height="40" rx="4" fill="#4CAF50"/>
+                    <text x="140" y="70" text-anchor="middle" fill="white" font-size="11">Layer 1</text>
+
+                    <path d="M180 65 L200 65 L200 95 L220 95" stroke="#9C27B0" stroke-width="2" stroke-dasharray="4" marker-end="url(#arrow-purple)"/>
+                    <text x="210" y="85" fill="#9C27B0" font-size="9">save A1</text>
+
+                    <rect x="220" y="85" width="50" height="25" rx="4" fill="#9C27B0" opacity="0.5"/>
+                    <text x="245" y="102" text-anchor="middle" fill="white" font-size="9">CPU</text>
+
+                    <path d="M185 65 L210 65" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <rect x="220" y="45" width="80" height="40" rx="4" fill="#4CAF50"/>
+                    <text x="260" y="70" text-anchor="middle" fill="white" font-size="11">Layer 2</text>
+
+                    <path d="M300 65 L320 65 L320 95 L340 95" stroke="#9C27B0" stroke-width="2" stroke-dasharray="4" marker-end="url(#arrow-purple)"/>
+                    <text x="330" y="85" fill="#9C27B0" font-size="9">save A2</text>
+
+                    <rect x="340" y="85" width="50" height="25" rx="4" fill="#9C27B0" opacity="0.5"/>
+                    <text x="365" y="102" text-anchor="middle" fill="white" font-size="9">CPU</text>
+
+                    <path d="M305 65 L330 65" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <rect x="340" y="45" width="80" height="40" rx="4" fill="#4CAF50"/>
+                    <text x="380" y="70" text-anchor="middle" fill="white" font-size="11">Layer 3</text>
+
+                    <!-- Backward pass -->
+                    <text x="500" y="30" fill="var(--accent-orange)" font-weight="bold" font-size="14">Backward Pass</text>
+
+                    <rect x="500" y="45" width="80" height="40" rx="4" fill="#FF9800"/>
+                    <text x="540" y="70" text-anchor="middle" fill="black" font-size="11">∇Layer 3</text>
+
+                    <path d="M585 65 L610 65" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <rect x="540" y="95" width="50" height="25" rx="4" fill="#9C27B0" opacity="0.5"/>
+                    <text x="565" y="112" text-anchor="middle" fill="white" font-size="9">CPU</text>
+
+                    <path d="M565 95 L565 85 L600 85 L600 75" stroke="#9C27B0" stroke-width="2" marker-end="url(#arrow-purple)"/>
+                    <text x="600" y="100" fill="#9C27B0" font-size="9">load A2</text>
+
+                    <rect x="620" y="45" width="80" height="40" rx="4" fill="#FF9800"/>
+                    <text x="660" y="70" text-anchor="middle" fill="black" font-size="11">∇Layer 2</text>
+
+                    <path d="M705 65 L730 65" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <rect x="660" y="95" width="50" height="25" rx="4" fill="#9C27B0" opacity="0.5"/>
+                    <text x="685" y="112" text-anchor="middle" fill="white" font-size="9">CPU</text>
+
+                    <path d="M685 95 L685 85 L720 85 L720 75" stroke="#9C27B0" stroke-width="2" marker-end="url(#arrow-purple)"/>
+                    <text x="720" y="100" fill="#9C27B0" font-size="9">load A1</text>
+
+                    <rect x="740" y="45" width="50" height="40" rx="4" fill="#FF9800"/>
+                    <text x="765" y="70" text-anchor="middle" fill="black" font-size="10">∇L1</text>
+
+                    <!-- Key -->
+                    <rect x="100" y="140" width="600" height="45" rx="6" fill="var(--bg-code)"/>
+                    <text x="400" y="165" text-anchor="middle" fill="var(--text-secondary)" font-size="11">
+                        Activations transferred on dedicated stream — overlaps with compute!
+                    </text>
+                </svg>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[22]</span>
+            </div>
+            <div class="cell-content">
+                <h4>PCIe Bandwidth Guide</h4>
+                <table class="comparison-table">
+                    <tr>
+                        <th>PCIe Version</th>
+                        <th>x16 Bandwidth</th>
+                        <th>Recommendation</th>
+                    </tr>
+                    <tr>
+                        <td>PCIe 3.0</td>
+                        <td>~16 GB/s</td>
+                        <td>Prefer recompute</td>
+                    </tr>
+                    <tr>
+                        <td>PCIe 4.0</td>
+                        <td>~32 GB/s</td>
+                        <td>Consider offload for complex models</td>
+                    </tr>
+                    <tr>
+                        <td>PCIe 5.0</td>
+                        <td>~64 GB/s</td>
+                        <td style="color: var(--accent-green);">✓ Activation offload likely faster</td>
+                    </tr>
+                </table>
+
+                <div class="highlight-box">
+                    <strong>Pro tip:</strong> Benchmark both on YOUR hardware. The crossover point depends on model architecture, layer complexity, and actual PCIe slot configuration.
+                </div>
+            </div>
+        </div>
+
+        <!-- ============================================ -->
+        <!-- PHASE 6: Accelerate Bypass -->
+        <!-- ============================================ -->
+        <div class="cell" id="phase6">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[23]</span>
+            </div>
+            <div class="cell-content">
+                <h2><span class="phase-badge phase-6">Phase 6</span> Accelerate Bypass</h2>
+
+                <div class="impact-meter">
+                    <span class="label">Memory</span>
+                    <div class="bar"><div class="fill" style="width: 5%; background: var(--accent-red);"></div></div>
+                </div>
+                <div class="impact-meter">
+                    <span class="label">Speed</span>
+                    <div class="bar"><div class="fill" style="width: 30%; background: var(--accent-green);"></div></div>
+                </div>
+                <div class="impact-meter">
+                    <span class="label">Complexity</span>
+                    <div class="bar"><div class="fill" style="width: 20%; background: var(--accent-green);"></div></div>
+                </div>
+
+                <h3>The Problem: Framework Overhead</h3>
+                <p>HuggingFace Accelerate is great for multi-GPU training, but adds dispatch overhead for single-GPU (the common case):</p>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type diagram">Diagram</span>
+                <span class="cell-number">[24]</span>
+            </div>
+            <div class="cell-content">
+                <h4>Accelerate Call Path</h4>
+                <svg class="svg-diagram" viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+                    <!-- With Accelerate -->
+                    <text x="50" y="30" fill="#F44336" font-weight="bold" font-size="14">With Accelerate (current):</text>
+
+                    <rect x="50" y="45" width="140" height="35" rx="4" fill="#F44336"/>
+                    <text x="120" y="68" text-anchor="middle" fill="white" font-size="11">accelerator.backward()</text>
+
+                    <path d="M195 62 L215 62" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <rect x="220" y="45" width="100" height="35" rx="4" fill="#FF9800"/>
+                    <text x="270" y="68" text-anchor="middle" fill="black" font-size="10">Check distributed</text>
+
+                    <path d="M325 62 L345 62" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <rect x="350" y="45" width="100" height="35" rx="4" fill="#FF9800"/>
+                    <text x="400" y="68" text-anchor="middle" fill="black" font-size="10">Handle scaling</text>
+
+                    <path d="M455 62 L475 62" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <rect x="480" y="45" width="100" height="35" rx="4" fill="#FF9800"/>
+                    <text x="530" y="68" text-anchor="middle" fill="black" font-size="10">Gradient sync</text>
+
+                    <path d="M585 62 L605 62" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+                    <rect x="610" y="45" width="100" height="35" rx="4" fill="#4CAF50"/>
+                    <text x="660" y="68" text-anchor="middle" fill="white" font-size="11">loss.backward()</text>
+
+                    <!-- Overhead label -->
+                    <rect x="220" y="85" width="360" height="20" rx="4" fill="rgba(244,67,54,0.2)"/>
+                    <text x="400" y="100" text-anchor="middle" fill="#F44336" font-size="10">← Overhead (no-op for single GPU) →</text>
+
+                    <!-- Without Accelerate -->
+                    <text x="50" y="140" fill="#4CAF50" font-weight="bold" font-size="14">Bypass (single GPU):</text>
+
+                    <rect x="50" y="155" width="100" height="35" rx="4" fill="#4CAF50"/>
+                    <text x="100" y="178" text-anchor="middle" fill="white" font-size="11">loss.backward()</text>
+
+                    <text x="170" y="178" fill="var(--accent-green)" font-size="12">✓ Direct call, no overhead!</text>
+                </svg>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type code">Code</span>
+                <span class="cell-number">[25]</span>
+            </div>
+            <div class="cell-content">
+                <h4>Simple Bypass Logic</h4>
+<pre><code><span class="keyword">class</span> <span class="function">SDTrainer</span>:
+    <span class="keyword">def</span> <span class="function">setup_accelerate_bypass</span>(self):
+        <span class="string">"""Detect if we can bypass Accelerate."""</span>
+        <span class="comment"># Only bypass for single-process, no distributed plugins</span>
+        self.use_accelerate_bypass = (
+            self.accelerator.num_processes == <span class="number">1</span>
+            <span class="keyword">and not</span> self.accelerator.state.deepspeed_plugin
+            <span class="keyword">and not</span> self.accelerator.state.fsdp_plugin
+        )
+
+        <span class="keyword">if</span> self.use_accelerate_bypass:
+            print(<span class="string">"Single GPU detected: bypassing Accelerate dispatch"</span>)
+
+    <span class="keyword">def</span> <span class="function">_backward</span>(self, loss):
+        <span class="string">"""Backward pass with optional bypass."""</span>
+        <span class="keyword">if</span> self.use_accelerate_bypass:
+            <span class="comment"># Direct call - skip Accelerate overhead</span>
+            loss.backward()
+
+            <span class="comment"># Manual gradient clipping</span>
+            <span class="keyword">if</span> self.train_config.max_grad_norm:
+                torch.nn.utils.<span class="function">clip_grad_norm_</span>(
+                    self.params_to_optimize,
+                    self.train_config.max_grad_norm
+                )
+        <span class="keyword">else</span>:
+            <span class="comment"># Standard Accelerate path (multi-GPU, DeepSpeed, etc.)</span>
+            self.accelerator.backward(loss)
+            <span class="keyword">if</span> self.train_config.max_grad_norm:
+                self.accelerator.<span class="function">clip_grad_norm_</span>(
+                    self.params_to_optimize,
+                    self.train_config.max_grad_norm
+                )</code></pre>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[26]</span>
+            </div>
+            <div class="cell-content">
+                <h4>When Bypass is Safe</h4>
+                <table class="comparison-table">
+                    <tr>
+                        <th>Scenario</th>
+                        <th>Bypass?</th>
+                    </tr>
+                    <tr>
+                        <td>Single GPU, no special plugins</td>
+                        <td style="color: var(--accent-green);">✓ Yes</td>
+                    </tr>
+                    <tr>
+                        <td>Multi-GPU (DDP)</td>
+                        <td style="color: var(--accent-red);">✗ No - need gradient sync</td>
+                    </tr>
+                    <tr>
+                        <td>DeepSpeed</td>
+                        <td style="color: var(--accent-red);">✗ No - DeepSpeed manages backward</td>
+                    </tr>
+                    <tr>
+                        <td>FSDP</td>
+                        <td style="color: var(--accent-red);">✗ No - FSDP manages sharding</td>
+                    </tr>
+                </table>
+
+                <div class="highlight-box">
+                    <strong>Expected Speedup:</strong> 1-5% faster per step. Small but free performance — especially valuable for long training runs.
+                </div>
+            </div>
+        </div>
+
+        <!-- ============================================ -->
+        <!-- Summary -->
+        <!-- ============================================ -->
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[27]</span>
+            </div>
+            <div class="cell-content">
+                <h2>Putting It All Together</h2>
+
+                <svg class="svg-diagram" viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Training step box -->
+                    <rect x="50" y="30" width="700" height="350" rx="12" fill="none" stroke="var(--border-color)" stroke-width="2"/>
+                    <text x="400" y="60" text-anchor="middle" fill="var(--accent-blue)" font-weight="bold" font-size="18">Optimized Training Step</text>
+
+                    <!-- Forward Pass -->
+                    <rect x="80" y="90" width="280" height="120" rx="8" fill="rgba(76,175,80,0.1)" stroke="#4CAF50"/>
+                    <text x="220" y="115" text-anchor="middle" fill="#4CAF50" font-weight="bold" font-size="14">Forward Pass</text>
+
+                    <text x="100" y="140" fill="var(--text-primary)" font-size="11">• Ring Allocator provides pre-allocated buffers</text>
+                    <text x="100" y="158" fill="var(--text-primary)" font-size="11">• Conductor pre-loads upcoming layers</text>
+                    <text x="100" y="176" fill="var(--text-primary)" font-size="11">• Activations offload to CPU (Phase 5)</text>
+                    <text x="100" y="194" fill="var(--text-primary)" font-size="11">• PCIe transfers overlap with compute</text>
+
+                    <!-- Backward Pass -->
+                    <rect x="80" y="230" width="280" height="120" rx="8" fill="rgba(255,152,0,0.1)" stroke="#FF9800"/>
+                    <text x="220" y="255" text-anchor="middle" fill="#FF9800" font-weight="bold" font-size="14">Backward Pass</text>
+
+                    <text x="100" y="280" fill="var(--text-primary)" font-size="11">• Fused backward: step + free per param</text>
+                    <text x="100" y="298" fill="var(--text-primary)" font-size="11">• Activations loaded back from CPU</text>
+                    <text x="100" y="316" fill="var(--text-primary)" font-size="11">• Conductor schedules layer offloads</text>
+                    <text x="100" y="334" fill="var(--text-primary)" font-size="11">• Accelerate bypassed (single GPU)</text>
+
+                    <!-- Memory Profile -->
+                    <rect x="420" y="90" width="300" height="260" rx="8" fill="var(--bg-code)"/>
+                    <text x="570" y="115" text-anchor="middle" fill="var(--accent-purple)" font-weight="bold" font-size="14">Memory Profile</text>
+
+                    <!-- Memory bars -->
+                    <text x="440" y="145" fill="var(--text-secondary)" font-size="11">Without optimizations:</text>
+                    <rect x="440" y="155" width="260" height="25" rx="4" fill="#333"/>
+                    <rect x="440" y="155" width="240" height="25" rx="4" fill="#F44336"/>
+                    <text x="560" y="173" text-anchor="middle" fill="white" font-size="10">~22 GB</text>
+
+                    <text x="440" y="205" fill="var(--text-secondary)" font-size="11">With Phase 2 (Ring Allocator):</text>
+                    <rect x="440" y="215" width="260" height="25" rx="4" fill="#333"/>
+                    <rect x="440" y="215" width="220" height="25" rx="4" fill="#FF9800"/>
+                    <text x="550" y="233" text-anchor="middle" fill="black" font-size="10">~20 GB (stable)</text>
+
+                    <text x="440" y="265" fill="var(--text-secondary)" font-size="11">+ Phase 3 (Fused Backward):</text>
+                    <rect x="440" y="275" width="260" height="25" rx="4" fill="#333"/>
+                    <rect x="440" y="275" width="180" height="25" rx="4" fill="#4CAF50"/>
+                    <text x="530" y="293" text-anchor="middle" fill="white" font-size="10">~18 GB</text>
+
+                    <text x="440" y="325" fill="var(--text-secondary)" font-size="11">+ Phase 4-5 (Conductor + Offload):</text>
+                    <rect x="440" y="335" width="260" height="25" rx="4" fill="#333"/>
+                    <rect x="440" y="335" width="120" height="25" rx="4" fill="#2196F3"/>
+                    <text x="500" y="353" text-anchor="middle" fill="white" font-size="10">~14 GB</text>
+                </svg>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[28]</span>
+            </div>
+            <div class="cell-content">
+                <h3>Quick Reference: Configuration</h3>
+<pre><code><span class="comment"># Example training config with all optimizations</span>
+<span class="string">memory_management:</span>
+  <span class="string">use_ring_allocator:</span> <span class="keyword">true</span>
+  <span class="string">ring_allocator_gpu_fraction:</span> <span class="number">0.25</span>
+
+  <span class="string">use_offload_conductor:</span> <span class="keyword">true</span>
+  <span class="string">layer_offload_fraction:</span> <span class="number">0.5</span>
+
+  <span class="string">activation_offload:</span> <span class="keyword">true</span>  <span class="comment"># Instead of gradient checkpointing recompute</span>
+
+<span class="string">training:</span>
+  <span class="string">fused_back_pass:</span> <span class="keyword">true</span>
+  <span class="string">gradient_accumulation_steps:</span> <span class="number">1</span>  <span class="comment"># Required for fused backward benefit</span>
+  <span class="string">bypass_accelerate:</span> <span class="keyword">null</span>  <span class="comment"># Auto-detect (null=auto, true=force, false=never)</span></code></pre>
+
+                <h3>Implementation Order</h3>
+                <table class="comparison-table">
+                    <tr>
+                        <th>Phase</th>
+                        <th>Effort</th>
+                        <th>Dependencies</th>
+                        <th>Impact</th>
+                    </tr>
+                    <tr>
+                        <td><span class="phase-badge phase-6">6</span> Accelerate Bypass</td>
+                        <td>1-2 days</td>
+                        <td>None</td>
+                        <td>1-5% speed</td>
+                    </tr>
+                    <tr>
+                        <td><span class="phase-badge phase-2">2</span> Ring Allocator</td>
+                        <td>3-4 days</td>
+                        <td>Phase 1</td>
+                        <td>Stable memory</td>
+                    </tr>
+                    <tr>
+                        <td><span class="phase-badge phase-3">3</span> Fused Backward</td>
+                        <td>3-5 days</td>
+                        <td>Phase 1</td>
+                        <td>10-30% VRAM</td>
+                    </tr>
+                    <tr>
+                        <td><span class="phase-badge phase-4">4</span> Offload Conductor</td>
+                        <td>1-2 weeks</td>
+                        <td>Phase 2</td>
+                        <td>PCIe efficiency</td>
+                    </tr>
+                    <tr>
+                        <td><span class="phase-badge phase-5">5</span> Activation Offload</td>
+                        <td>1-2 weeks</td>
+                        <td>Phases 2, 4</td>
+                        <td>Speed + VRAM</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+
+        <div class="cell">
+            <div class="cell-header">
+                <span class="cell-type markdown">Markdown</span>
+                <span class="cell-number">[29]</span>
+            </div>
+            <div class="cell-content">
+                <div style="text-align: center; padding: 30px; background: var(--bg-code); border-radius: 8px;">
+                    <p style="font-size: 1.2em; color: var(--text-secondary); margin: 0;">
+                        This guide covers optimization phases from the AI-Toolkit performance roadmap.<br>
+                        Based on techniques from <a href="https://github.com/Nerogar/OneTrainer" style="color: var(--accent-blue);">OneTrainer</a>.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
