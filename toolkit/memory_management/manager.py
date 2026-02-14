@@ -1,4 +1,5 @@
 import random
+from typing import Optional
 
 import torch
 
@@ -108,6 +109,44 @@ class MemoryManager:
             allocator.deallocate_cache()
             state["ring_allocator_gpu"] = None
         state["use_ring_allocator"] = False
+
+    @staticmethod
+    def get_or_create_layer_transfer_allocators(
+        train_device: torch.device,
+        temp_device: torch.device,
+        gpu_target_bytes: int,
+        cpu_target_bytes: int,
+    ) -> tuple[RingBufferAllocator, RingBufferAllocator]:
+        from .manager_modules import _get_device_state
+
+        state = _get_device_state(train_device)
+
+        gpu_allocator: Optional[RingBufferAllocator] = state.get("layer_transfer_allocator_gpu")
+        if gpu_allocator is None or getattr(gpu_allocator, "total_capacity", 0) < gpu_target_bytes:
+            if gpu_allocator is not None:
+                gpu_allocator.deallocate_cache()
+            gpu_allocator = RingBufferAllocator(train_device, target_bytes=max(1, gpu_target_bytes))
+            state["layer_transfer_allocator_gpu"] = gpu_allocator
+
+        cpu_allocator: Optional[RingBufferAllocator] = state.get("layer_transfer_allocator_cpu")
+        if cpu_allocator is None or getattr(cpu_allocator, "total_capacity", 0) < cpu_target_bytes:
+            if cpu_allocator is not None:
+                cpu_allocator.deallocate_cache()
+            cpu_allocator = RingBufferAllocator(temp_device, target_bytes=max(1, cpu_target_bytes))
+            state["layer_transfer_allocator_cpu"] = cpu_allocator
+
+        return gpu_allocator, cpu_allocator
+
+    @staticmethod
+    def release_layer_transfer_allocators(train_device: torch.device) -> None:
+        from .manager_modules import _get_device_state
+
+        state = _get_device_state(train_device)
+        for key in ("layer_transfer_allocator_gpu", "layer_transfer_allocator_cpu"):
+            allocator = state.get(key)
+            if allocator is not None:
+                allocator.deallocate_cache()
+                state[key] = None
 
     @classmethod
     def attach(

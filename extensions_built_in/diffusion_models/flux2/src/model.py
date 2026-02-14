@@ -4,6 +4,9 @@ from torch import Tensor, nn
 import torch.utils.checkpoint as ckpt
 import math
 from dataclasses import dataclass, field
+from typing import Optional
+
+from toolkit.memory_management.offload_conductor import OffloadConductor
 
 
 @dataclass
@@ -129,6 +132,10 @@ class Flux2(nn.Module):
         )
 
         self.gradient_checkpointing = False
+        self.offload_conductor: Optional[OffloadConductor] = None
+        self._offload_double_indices: list[int] = []
+        self._offload_single_indices: list[int] = []
+        self._checkpoint_use_reentrant = False
 
     @property
     def device(self):
@@ -141,6 +148,46 @@ class Flux2(nn.Module):
     def enable_gradient_checkpointing(self):
         self.gradient_checkpointing = True
 
+    def configure_offload_conductor(
+        self,
+        train_device: torch.device,
+        temp_device: torch.device = torch.device("cpu"),
+        layer_offload_fraction: float = 0.5,
+        strict_gradient_offload: bool = True,
+    ) -> None:
+        conductor = OffloadConductor(
+            train_device=train_device,
+            temp_device=temp_device,
+            layer_offload_fraction=layer_offload_fraction,
+            strict_gradient_offload=strict_gradient_offload,
+        )
+        self._offload_double_indices = [conductor.add_layer(block) for block in self.double_blocks]
+        self._offload_single_indices = [conductor.add_layer(block) for block in self.single_blocks]
+        self.offload_conductor = conductor
+
+        # Backward/forward transition detection in conductor uses reentrant behavior.
+        self._checkpoint_use_reentrant = True
+
+    def activate_offload_conductor(self) -> bool:
+        if self.offload_conductor is None:
+            return False
+        self.offload_conductor.activate()
+        return self.offload_conductor.is_active
+
+    def deactivate_offload_conductor(self) -> bool:
+        if self.offload_conductor is None:
+            return False
+        self.offload_conductor.deactivate()
+        return not self.offload_conductor.is_active
+
+    def _before_layer(self, layer_index: int) -> None:
+        if self.offload_conductor is not None and self.offload_conductor.is_active:
+            self.offload_conductor.before_layer(layer_index)
+
+    def _after_layer(self, layer_index: int) -> None:
+        if self.offload_conductor is not None and self.offload_conductor.is_active:
+            self.offload_conductor.after_layer(layer_index)
+
     def forward(
         self,
         x: Tensor,
@@ -150,6 +197,9 @@ class Flux2(nn.Module):
         ctx_ids: Tensor,
         guidance: Tensor | None,
     ):
+        if self.offload_conductor is not None and self.offload_conductor.is_active:
+            self.offload_conductor.start_forward(keep_graph=self.training and torch.is_grad_enabled())
+
         num_txt_tokens = ctx.shape[1]
 
         timestep_emb = timestep_embedding(timesteps, 256)
@@ -168,19 +218,43 @@ class Flux2(nn.Module):
         pe_x = self.pe_embedder(x_ids)
         pe_ctx = self.pe_embedder(ctx_ids)
 
-        for block in self.double_blocks:
+        for i, block in enumerate(self.double_blocks):
+            layer_index = self._offload_double_indices[i] if self._offload_double_indices else i
             if torch.is_grad_enabled() and self.gradient_checkpointing:
+                def _double_wrapper(
+                    img_in,
+                    txt_in,
+                    pe_x_in,
+                    pe_ctx_in,
+                    mod_img_in,
+                    mod_txt_in,
+                    _layer_index=layer_index,
+                    _block=block,
+                ):
+                    self._before_layer(_layer_index)
+                    out_img, out_txt = _block(
+                        img_in,
+                        txt_in,
+                        pe_x_in,
+                        pe_ctx_in,
+                        mod_img_in,
+                        mod_txt_in,
+                    )
+                    self._after_layer(_layer_index)
+                    return out_img, out_txt
+
                 img, txt = ckpt.checkpoint(
-                    block,
+                    _double_wrapper,
                     img,
                     txt,
                     pe_x,
                     pe_ctx,
                     double_block_mod_img,
                     double_block_mod_txt,
-                    use_reentrant=False,
+                    use_reentrant=self._checkpoint_use_reentrant,
                 )
             else:
+                self._before_layer(layer_index)
                 img, txt = block(
                     img,
                     txt,
@@ -189,25 +263,39 @@ class Flux2(nn.Module):
                     double_block_mod_img,
                     double_block_mod_txt,
                 )
+                self._after_layer(layer_index)
 
         img = torch.cat((txt, img), dim=1)
         pe = torch.cat((pe_ctx, pe_x), dim=2)
 
         for i, block in enumerate(self.single_blocks):
+            layer_index = (
+                self._offload_single_indices[i]
+                if self._offload_single_indices
+                else len(self.double_blocks) + i
+            )
             if torch.is_grad_enabled() and self.gradient_checkpointing:
+                def _single_wrapper(img_in, pe_in, mod_in, _layer_index=layer_index, _block=block):
+                    self._before_layer(_layer_index)
+                    out = _block(img_in, pe_in, mod_in)
+                    self._after_layer(_layer_index)
+                    return out
+
                 img = ckpt.checkpoint(
-                    block,
+                    _single_wrapper,
                     img,
                     pe,
                     single_block_mod,
-                    use_reentrant=False,
+                    use_reentrant=self._checkpoint_use_reentrant,
                 )
             else:
+                self._before_layer(layer_index)
                 img = block(
                     img,
                     pe,
                     single_block_mod,
                 )
+                self._after_layer(layer_index)
 
         img = img[:, num_txt_tokens:, ...]
 

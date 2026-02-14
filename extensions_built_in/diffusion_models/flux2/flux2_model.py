@@ -171,11 +171,19 @@ class Flux2Model(BaseModel):
             self.model_config.layer_offloading
             and self.model_config.layer_offloading_transformer_percent > 0
         ):
-            MemoryManager.attach(
-                transformer,
-                self.device_torch,
-                offload_percent=self.model_config.layer_offloading_transformer_percent,
-            )
+            if self.model_config.use_offload_conductor and hasattr(transformer, "configure_offload_conductor"):
+                transformer.configure_offload_conductor(
+                    train_device=self.device_torch,
+                    temp_device=torch.device("cpu"),
+                    layer_offload_fraction=self.model_config.layer_offloading_transformer_percent,
+                    strict_gradient_offload=True,
+                )
+            else:
+                MemoryManager.attach(
+                    transformer,
+                    self.device_torch,
+                    offload_percent=self.model_config.layer_offloading_transformer_percent,
+                )
 
         if self.model_config.low_vram:
             self.print_and_status_update("Moving transformer to CPU")

@@ -151,6 +151,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         self.logger = create_logger(self.logging_config, config, self.save_root)
         self.optimizer: torch.optim.Optimizer = None
         self.fused_backward_manager: Optional[FusedBackwardManager] = None
+        self.offload_conductor_enabled: bool = False
         self.lr_scheduler = None
         self.data_loader: Union[DataLoader, None] = None
         self.data_loader_reg: Union[DataLoader, None] = None
@@ -738,6 +739,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
             self.logger.start()
         self.prepare_accelerator()
         self.setup_fused_backward_manager()
+        self.setup_offload_conductor()
 
     def iter_trainable_parameters(self):
         optimizer = self.optimizer
@@ -798,6 +800,50 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.fused_backward_manager is not None:
             self.fused_backward_manager.detach()
             self.fused_backward_manager = None
+
+    def setup_offload_conductor(self):
+        self.offload_conductor_enabled = False
+        if not self.model_config.use_offload_conductor:
+            return
+
+        if not self.train_config.gradient_checkpointing:
+            print_acc("Warning: disabling model.use_offload_conductor without gradient checkpointing.")
+            return
+
+        if not self.train_config.fused_back_pass:
+            print_acc("Warning: disabling model.use_offload_conductor without train.fused_back_pass.")
+            return
+        
+        if self.fused_backward_manager is None or not self.fused_backward_manager.enabled:
+            print_acc("Warning: disabling model.use_offload_conductor because fused backward is not active.")
+            return
+
+        if self.sd is None or self.sd.unet is None:
+            return
+
+        unet_unwrapped = unwrap_model(self.sd.unet)
+        if not hasattr(unet_unwrapped, "activate_offload_conductor"):
+            print_acc("Warning: model.use_offload_conductor is enabled, but current model has no conductor hooks.")
+            return
+
+        activated = bool(unet_unwrapped.activate_offload_conductor())
+        self.offload_conductor_enabled = activated
+        if activated:
+            print_acc("Offload conductor enabled.")
+        else:
+            print_acc("Warning: model.use_offload_conductor requested, but model has no configured conductor.")
+
+    def teardown_offload_conductor(self):
+        if not self.offload_conductor_enabled:
+            return
+        if self.sd is None or self.sd.unet is None:
+            self.offload_conductor_enabled = False
+            return
+
+        unet_unwrapped = unwrap_model(self.sd.unet)
+        if hasattr(unet_unwrapped, "deactivate_offload_conductor"):
+            unet_unwrapped.deactivate_offload_conductor()
+        self.offload_conductor_enabled = False
         
     def sample_step_hook(self, img_num, total_imgs):
         pass
@@ -2286,14 +2332,17 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     did_oom = True
                 else:
                     self.teardown_fused_backward_manager()
+                    self.teardown_offload_conductor()
                     raise  # not an OOM; surface real errors
             except Exception:
                 self.teardown_fused_backward_manager()
+                self.teardown_offload_conductor()
                 raise
             if did_oom:
                 if self.fused_backward_manager is not None and self.fused_backward_manager.enabled and \
                         self.fused_backward_manager.did_fused_step_this_update():
                     self.teardown_fused_backward_manager()
+                    self.teardown_offload_conductor()
                     raise RuntimeError(
                         "OOM occurred after fused backward already stepped one or more parameters; "
                         "aborting to avoid partial-update corruption."
@@ -2486,6 +2535,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
             self.logger.finish()
         self.accelerator.end_training()
         self.teardown_fused_backward_manager()
+        self.teardown_offload_conductor()
 
         if self.accelerator.is_main_process:
             # push to hub

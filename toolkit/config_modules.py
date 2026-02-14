@@ -670,6 +670,7 @@ class ModelConfig:
         # 0 is off and 1.0 is 100% of the layers
         self.layer_offloading_transformer_percent = kwargs.get("layer_offloading_transformer_percent", 1.0)
         self.layer_offloading_text_encoder_percent = kwargs.get("layer_offloading_text_encoder_percent", 1.0)
+        self.use_offload_conductor = kwargs.get("use_offload_conductor", False)
 
         # can be used to load the extras like text encoder or vae from here
         # only setup for some models but will prevent having to download the te for
