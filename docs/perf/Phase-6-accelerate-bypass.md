@@ -33,144 +33,71 @@ loss.backward()  # Direct call
 
 | File | Change |
 |------|--------|
-| `jobs/process/BaseSDTrainProcess.py` | Add bypass detection |
-| `extensions_built_in/sd_trainer/SDTrainer.py` | Conditional backward |
+| `jobs/process/BaseSDTrainProcess.py` | Bypass detection, context management, and prepare-path branching |
+| `extensions_built_in/sd_trainer/SDTrainer.py` | Backward/grad-clip path selection through `_backward` |
+| `toolkit/config_modules.py` | Optional config field for explicit bypass policy |
 
 ---
 
-## Implementation
+## Correctness Guardrails
 
-### Step 1: Add configuration and detection
+1. **Bypass must be process-aware, not `torch.cuda.device_count()` based.**
+   - Use accelerator state (`num_processes`, distributed type, deepspeed/fsdp flags), not global visible devices.
 
-**File:** `jobs/process/BaseSDTrainProcess.py`
+2. **This repo’s loop uses Accelerate in more places than `backward()`.**
+   - `accelerator.accumulate(...)`, `accelerator.prepare(...)`, `clip_grad_norm_`, and synchronization helpers are in the main path.
+   - A partial bypass should be explicit about which calls stay on Accelerate.
 
-```python
-class BaseSDTrainProcess:
-    def __init__(self, ...):
-        # ... existing init ...
-        self.use_accelerate = True  # Default to using Accelerate
-        self._grad_scaler = None
+3. **Mixed precision and fused backward safety must stay consistent.**
+   - Existing fused-backward guards currently disable fused stepping with AMP GradScaler.
+   - A bypass path that introduces manual scaling must preserve that behavior (or keep scaler off in bypass mode).
 
-    def setup_accelerate_bypass(self):
-        """Configure whether to use Accelerate based on hardware and config."""
-        # Check config override
-        bypass = self.train_config.bypass_accelerate
+4. **Do not bypass in multi-process or plugin-driven runs.**
+   - Always keep Accelerate path for DDP/FSDP/DeepSpeed and any multi-process launch.
 
-        if bypass is None:
-            # Auto-detect: bypass for single GPU
-            self.use_accelerate = torch.cuda.device_count() > 1
-        else:
-            self.use_accelerate = not bypass
+### Step 1: Add explicit bypass policy and detection
 
-        if not self.use_accelerate:
-            print("Accelerate bypass enabled (single-GPU optimization)")
+**Primary file:** `jobs/process/BaseSDTrainProcess.py`
 
-            # Set up manual gradient scaler if needed
-            if self.train_config.mixed_precision in ['fp16', 'bf16']:
-                # bf16 doesn't need scaling on modern GPUs
-                if self.train_config.mixed_precision == 'fp16':
-                    self._grad_scaler = torch.cuda.amp.GradScaler()
-                else:
-                    self._grad_scaler = None
-```
+Add a policy like:
+- `None`: auto
+- `true`: force bypass (single-process only)
+- `false`: force Accelerate
 
-### Step 2: Conditional backward pass
+Auto mode should enable bypass only when:
+- single process (`accelerator.num_processes == 1`)
+- no deepspeed/fsdp/distributed plugin active
+- AMP/scaler/fused-backward constraints are satisfied.
 
-**File:** `extensions_built_in/sd_trainer/SDTrainer.py`
+### Step 2: Route backward and grad clipping through one switch
 
-```python
-def backward_loss(self, loss: torch.Tensor) -> None:
-    """Backward pass with optional Accelerate bypass.
+**Primary file:** `extensions_built_in/sd_trainer/SDTrainer.py`
 
-    Args:
-        loss: The loss tensor to backpropagate.
-    """
-    if self.use_accelerate:
-        # Standard Accelerate path
-        self.accelerator.backward(loss)
-    else:
-        # Direct backward (single-GPU optimization)
-        if self._grad_scaler is not None:
-            # FP16 needs scaling
-            self._grad_scaler.scale(loss).backward()
-        else:
-            # BF16 or FP32: direct backward
-            loss.backward()
+Current single call site is `_backward()`:
+- Accelerate path: `self.accelerator.backward(loss)`
+- Bypass path: `loss.backward()`
 
+If bypass is active:
+- use native `torch.nn.utils.clip_grad_norm_` where clipping is currently applied
+- keep optimizer stepping semantics unchanged
+- preserve fused-backward manager state transitions around backward.
 
-def optimizer_step(self) -> None:
-    """Optimizer step with optional Accelerate bypass."""
-    if self.use_accelerate:
-        # Accelerate handles everything
-        if self.train_config.max_grad_norm:
-            self.accelerator.clip_grad_norm_(
-                self.params_to_optimize,
-                self.train_config.max_grad_norm
-            )
-        self.optimizer.step()
-    else:
-        # Manual handling
-        if self._grad_scaler is not None:
-            # Unscale before clipping
-            self._grad_scaler.unscale_(self.optimizer)
+### Step 3: Scope the first iteration to low-risk bypass
 
-        if self.train_config.max_grad_norm:
-            torch.nn.utils.clip_grad_norm_(
-                self.params_to_optimize,
-                self.train_config.max_grad_norm
-            )
+Start with:
+- bypass only `accelerator.backward` and `accelerator.clip_grad_norm_`
+- keep `accelerator.prepare` and `accelerator.accumulate` unchanged initially
 
-        if self._grad_scaler is not None:
-            self._grad_scaler.step(self.optimizer)
-            self._grad_scaler.update()
-        else:
-            self.optimizer.step()
-
-
-# Update training loop
-def hook_train_loop(self, batch):
-    # ... existing code up to loss computation ...
-
-    # Backward
-    self.backward_loss(loss)
-
-    # Optimizer step (if update step)
-    if is_update_step:
-        self.optimizer_step()
-        self.lr_scheduler.step()
-        self.optimizer.zero_grad()
-
-    return loss.detach()
-```
-
-### Step 3: Model preparation bypass
-
-When bypassing Accelerate, skip `accelerator.prepare()` for models:
-
-```python
-def setup_model(self):
-    # ... existing model loading ...
-
-    if self.use_accelerate:
-        # Standard path: let Accelerate prepare models
-        self.sd.unet, self.optimizer, self.lr_scheduler = self.accelerator.prepare(
-            self.sd.unet, self.optimizer, self.lr_scheduler
-        )
-    else:
-        # Bypass: move model to device manually
-        self.sd.unet = self.sd.unet.to(self.device_torch)
-
-        # Still use Accelerator for some utilities
-        # but skip the model wrapping
-```
+Then benchmark. If overhead reduction is insufficient, phase a second pass that bypasses prepare/accumulate for single-process runs with full regression coverage.
 
 ---
 
 ## Configuration
 
 ```yaml
-training:
-  bypass_accelerate: null  # null = auto-detect, true = force bypass, false = always use Accelerate
+train:
+  # Proposed new key (not present today):
+  # bypass_accelerate: null  # null=auto, true=force single-process bypass, false=always use Accelerate
 ```
 
 ---
@@ -232,13 +159,11 @@ print("Loss equivalence verified")
 ### Test 3: Multi-GPU still uses Accelerate
 
 ```python
-# On multi-GPU system
-assert torch.cuda.device_count() > 1
-
 process = BaseSDTrainProcess(...)
 process.setup_accelerate_bypass()
 
-# Should auto-detect and use Accelerate
+# Should use Accelerate whenever process count > 1
+assert process.accelerator.num_processes > 1
 assert process.use_accelerate == True
 ```
 
@@ -246,38 +171,9 @@ assert process.use_accelerate == True
 
 ## Edge Cases
 
-### DeepSpeed / FSDP
-
-If using DeepSpeed or FSDP (Accelerate integrations), bypass should be disabled:
-
-```python
-def setup_accelerate_bypass(self):
-    if self.train_config.deepspeed or self.train_config.fsdp:
-        self.use_accelerate = True
-        print("Accelerate required for DeepSpeed/FSDP, bypass disabled")
-        return
-
-    # ... rest of detection logic ...
-```
-
-### Gradient Accumulation
-
-Bypass works with gradient accumulation, but must handle scaling:
-
-```python
-def backward_loss(self, loss, is_last_micro_batch=False):
-    # Scale loss for accumulation
-    if self.train_config.gradient_accumulation_steps > 1:
-        loss = loss / self.train_config.gradient_accumulation_steps
-
-    if self.use_accelerate:
-        self.accelerator.backward(loss)
-    else:
-        if self._grad_scaler:
-            self._grad_scaler.scale(loss).backward()
-        else:
-            loss.backward()
-```
+- DeepSpeed/FSDP/DDP: force Accelerate path.
+- AMP + fused backward: keep existing disablement/guards intact.
+- Gradient accumulation: if `accelerator.accumulate` remains enabled, ensure bypassed backward still obeys update-step gating already used by the fused manager.
 
 ---
 
