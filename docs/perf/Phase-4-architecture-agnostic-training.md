@@ -22,6 +22,8 @@ Add a small capability API on base model classes, e.g.:
 - `stable_loss_requires_batch`
 - `supports_fused_parameter_step` (optional, optimizer-derived in trainer)
 
+Ring allocator behavior remains a layer-offloading runtime implementation detail and is not a model capability flag.
+
 Trainer reads capabilities once and gates features explicitly.
 
 ### 2) Decouple Conductor from Fused Back Pass
