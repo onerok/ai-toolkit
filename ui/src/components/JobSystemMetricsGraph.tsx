@@ -20,10 +20,36 @@ function formatNum(v: number) {
 
 // Metric display configuration
 const METRIC_CONFIG: Record<string, { label: string; color: string; unit: string; axis: 'memory' | 'percent' }> = {
-  vram_gb: { label: 'VRAM', color: 'rgba(96,165,250,1)', unit: 'GB', axis: 'memory' },
+  vram_gb: { label: 'VRAM Total', color: 'rgba(96,165,250,1)', unit: 'GB', axis: 'memory' },
   ram_gb: { label: 'RAM', color: 'rgba(52,211,153,1)', unit: 'GB', axis: 'memory' },
   cpu_percent: { label: 'CPU', color: 'rgba(251,191,36,1)', unit: '%', axis: 'percent' },
 };
+
+function getMetricConfig(key: string) {
+  const exact = METRIC_CONFIG[key];
+  if (exact) return exact;
+
+  const gpuMatch = key.match(/^vram_gpu_(\d+)_gb$/);
+  if (gpuMatch) {
+    const gpuIdx = Number(gpuMatch[1]);
+    const palette = [
+      'rgba(59,130,246,1)',
+      'rgba(37,99,235,1)',
+      'rgba(29,78,216,1)',
+      'rgba(30,64,175,1)',
+      'rgba(14,165,233,1)',
+      'rgba(2,132,199,1)',
+    ];
+    return {
+      label: `VRAM GPU ${gpuIdx}`,
+      color: palette[gpuIdx % palette.length],
+      unit: 'GB',
+      axis: 'memory' as const,
+    };
+  }
+
+  return null;
+}
 
 export default function JobSystemMetricsGraph({ job, defaultCollapsed = true }: Props) {
   const pollInterval = job.status === 'running' ? 2000 : null;
@@ -88,12 +114,12 @@ export default function JobSystemMetricsGraph({ job, defaultCollapsed = true }: 
   const hasData = chartData.length > 1;
 
   // Check which axes we need
-  const needsMemoryAxis = activeKeys.some(k => METRIC_CONFIG[k]?.axis === 'memory');
-  const needsPercentAxis = activeKeys.some(k => METRIC_CONFIG[k]?.axis === 'percent');
+  const needsMemoryAxis = activeKeys.some(k => getMetricConfig(k)?.axis === 'memory');
+  const needsPercentAxis = activeKeys.some(k => getMetricConfig(k)?.axis === 'percent');
 
   // Calculate memory domain
   const memoryDomain = useMemo((): [number, number | 'auto'] => {
-    const memoryKeys = activeKeys.filter(k => METRIC_CONFIG[k]?.axis === 'memory');
+    const memoryKeys = activeKeys.filter(k => getMetricConfig(k)?.axis === 'memory');
     if (memoryKeys.length === 0) return [0, 'auto'];
 
     let max = 0;
@@ -118,7 +144,7 @@ export default function JobSystemMetricsGraph({ job, defaultCollapsed = true }: 
       values: activeKeys.map(k => ({
         key: k,
         value: last[k] as number | undefined,
-        config: METRIC_CONFIG[k],
+        config: getMetricConfig(k),
       })),
     };
   }, [chartData, activeKeys]);
@@ -244,7 +270,7 @@ export default function JobSystemMetricsGraph({ job, defaultCollapsed = true }: 
                       labelStyle={{ color: 'rgba(255,255,255,0.75)' }}
                       labelFormatter={(label: any) => `step ${label}`}
                       formatter={(value: any, name: any) => {
-                        const config = METRIC_CONFIG[name];
+                        const config = getMetricConfig(String(name));
                         return [`${formatNum(Number(value))} ${config?.unit ?? ''}`, config?.label ?? name];
                       }}
                     />
@@ -258,7 +284,7 @@ export default function JobSystemMetricsGraph({ job, defaultCollapsed = true }: 
                     />
 
                     {activeKeys.map(k => {
-                      const config = METRIC_CONFIG[k];
+                      const config = getMetricConfig(k);
                       if (!config) return null;
 
                       return (
@@ -266,7 +292,7 @@ export default function JobSystemMetricsGraph({ job, defaultCollapsed = true }: 
                           key={k}
                           type="monotone"
                           dataKey={k}
-                          name={k}
+                          name={config.label}
                           yAxisId={config.axis}
                           stroke={config.color}
                           strokeWidth={1.5}

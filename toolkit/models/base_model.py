@@ -271,6 +271,36 @@ class BaseModel:
             divisibility = divisibility * 2
         return divisibility
 
+    # Phase 4 capability contract defaults.
+    # Model implementations can override these when needed.
+    def supports_offload_conductor(self) -> bool:
+        model = self.model
+        if model is None:
+            return False
+        model_unwrapped = unwrap_model(model)
+        return hasattr(model_unwrapped, "activate_offload_conductor") and hasattr(
+            model_unwrapped, "deactivate_offload_conductor"
+        )
+
+    def supports_stable_loss(self) -> bool:
+        return True
+
+    def stable_loss_requires_batch(self) -> bool:
+        return False
+
+    def activate_offload_conductor(self) -> bool:
+        if not self.supports_offload_conductor():
+            return False
+        model_unwrapped = unwrap_model(self.model)
+        return bool(model_unwrapped.activate_offload_conductor())
+
+    def deactivate_offload_conductor(self) -> bool:
+        if not self.supports_offload_conductor():
+            return False
+        model_unwrapped = unwrap_model(self.model)
+        model_unwrapped.deactivate_offload_conductor()
+        return True
+
     # these must be implemented in child classes
     def load_model(self):
         # override this in child classes

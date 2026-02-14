@@ -97,6 +97,8 @@ class FusedBackwardManager:
         self._did_any_param_step = False
         if self._is_update_step:
             self.stats["update_steps_seen"] += 1
+            if self.enabled and hasattr(self._raw_optimizer, "begin_fused_update"):
+                self._raw_optimizer.begin_fused_update()
 
     def set_backward_mode(self, allow_step: bool):
         self._allow_step_on_backward = bool(allow_step)
@@ -138,4 +140,5 @@ class FusedBackwardManager:
     def mark_update_complete(self):
         if self._did_any_param_step:
             self.stats["update_steps_fused"] += 1
-
+        if self.enabled and hasattr(self._raw_optimizer, "end_fused_update"):
+            self._raw_optimizer.end_fused_update()

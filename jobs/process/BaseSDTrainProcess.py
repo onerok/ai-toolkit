@@ -8,7 +8,7 @@ from collections import OrderedDict
 import os
 import re
 import traceback
-from typing import Union, List, Optional
+from typing import Union, List, Optional, Any
 
 import numpy as np
 import psutil
@@ -737,9 +737,87 @@ class BaseSDTrainProcess(BaseTrainProcess):
     def hook_before_train_loop(self):
         if self.accelerator.is_main_process:
             self.logger.start()
+        self.validate_startup_compatibility()
         self.prepare_accelerator()
         self.setup_fused_backward_manager()
         self.setup_offload_conductor()
+
+    def _resolve_model_capability(self, name: str, default: Any) -> Any:
+        if self.sd is None:
+            return default
+        capability = getattr(self.sd, name, default)
+        if callable(capability):
+            try:
+                return capability()
+            except Exception:
+                return default
+        return capability
+
+    def _raw_optimizer(self):
+        optimizer = self.optimizer
+        if optimizer is not None and hasattr(optimizer, "optimizer"):
+            return optimizer.optimizer
+        return optimizer
+
+    def _disable_feature_with_reason(self, feature_key: str, reason: str):
+        if feature_key == "train.fused_back_pass":
+            self.train_config.fused_back_pass = False
+        elif feature_key == "model.use_offload_conductor":
+            self.model_config.use_offload_conductor = False
+        elif feature_key == "train.stable_loss_enabled":
+            self.train_config.stable_loss_enabled = False
+        print_acc(f"Warning: disabling {feature_key} ({reason}).")
+
+    def validate_startup_compatibility(self):
+        optimizer = self._raw_optimizer()
+        optimizer_name = optimizer.__class__.__name__ if optimizer is not None else "None"
+
+        if self.train_config.fused_back_pass:
+            has_step_parameter = bool(optimizer is not None and hasattr(optimizer, "step_parameter"))
+            if not has_step_parameter:
+                self._disable_feature_with_reason(
+                    "train.fused_back_pass",
+                    f"optimizer '{optimizer_name}' does not expose step_parameter",
+                )
+            else:
+                print_acc(f"Fused backward compatibility: optimizer '{optimizer_name}' supports step_parameter.")
+
+        if self.model_config.use_offload_conductor:
+            supports_offload_conductor = bool(self._resolve_model_capability("supports_offload_conductor", False))
+            if not self.train_config.gradient_checkpointing:
+                self._disable_feature_with_reason(
+                    "model.use_offload_conductor",
+                    "requires train.gradient_checkpointing=true",
+                )
+            elif self.device_torch.type != "cuda":
+                self._disable_feature_with_reason(
+                    "model.use_offload_conductor",
+                    "requires CUDA training device",
+                )
+            elif not supports_offload_conductor:
+                self._disable_feature_with_reason(
+                    "model.use_offload_conductor",
+                    "model does not expose offload conductor hooks",
+                )
+
+        if self.train_config.stable_loss_enabled:
+            supports_stable_loss = bool(self._resolve_model_capability("supports_stable_loss", True))
+            stable_loss_requires_batch = bool(self._resolve_model_capability("stable_loss_requires_batch", False))
+            if not supports_stable_loss:
+                self._disable_feature_with_reason(
+                    "train.stable_loss_enabled",
+                    "model marks stable loss as unsupported",
+                )
+            elif stable_loss_requires_batch:
+                self._disable_feature_with_reason(
+                    "train.stable_loss_enabled",
+                    "model requires eval batch for stable loss and no provider is configured",
+                )
+            elif self.train_config.batch_size < 1:
+                self._disable_feature_with_reason(
+                    "train.stable_loss_enabled",
+                    "batch size must be >= 1",
+                )
 
     def iter_trainable_parameters(self):
         optimizer = self.optimizer
@@ -810,23 +888,22 @@ class BaseSDTrainProcess(BaseTrainProcess):
             print_acc("Warning: disabling model.use_offload_conductor without gradient checkpointing.")
             return
 
-        if not self.train_config.fused_back_pass:
-            print_acc("Warning: disabling model.use_offload_conductor without train.fused_back_pass.")
-            return
-        
-        if self.fused_backward_manager is None or not self.fused_backward_manager.enabled:
-            print_acc("Warning: disabling model.use_offload_conductor because fused backward is not active.")
+        supports_offload_conductor = bool(self._resolve_model_capability("supports_offload_conductor", False))
+        if not supports_offload_conductor:
+            print_acc("Warning: disabling model.use_offload_conductor because current model has no conductor hooks.")
             return
 
-        if self.sd is None or self.sd.unet is None:
+        if self.sd is None:
             return
 
-        unet_unwrapped = unwrap_model(self.sd.unet)
-        if not hasattr(unet_unwrapped, "activate_offload_conductor"):
-            print_acc("Warning: model.use_offload_conductor is enabled, but current model has no conductor hooks.")
-            return
-
-        activated = bool(unet_unwrapped.activate_offload_conductor())
+        if hasattr(self.sd, "activate_offload_conductor"):
+            activated = bool(self.sd.activate_offload_conductor())
+        else:
+            unet = getattr(self.sd, "unet", None)
+            if unet is None:
+                return
+            unet_unwrapped = unwrap_model(unet)
+            activated = bool(unet_unwrapped.activate_offload_conductor())
         self.offload_conductor_enabled = activated
         if activated:
             print_acc("Offload conductor enabled.")
@@ -836,13 +913,18 @@ class BaseSDTrainProcess(BaseTrainProcess):
     def teardown_offload_conductor(self):
         if not self.offload_conductor_enabled:
             return
-        if self.sd is None or self.sd.unet is None:
+        if self.sd is None:
             self.offload_conductor_enabled = False
             return
 
-        unet_unwrapped = unwrap_model(self.sd.unet)
-        if hasattr(unet_unwrapped, "deactivate_offload_conductor"):
-            unet_unwrapped.deactivate_offload_conductor()
+        if hasattr(self.sd, "deactivate_offload_conductor"):
+            self.sd.deactivate_offload_conductor()
+        else:
+            unet = getattr(self.sd, "unet", None)
+            if unet is not None:
+                unet_unwrapped = unwrap_model(unet)
+                if hasattr(unet_unwrapped, "deactivate_offload_conductor"):
+                    unet_unwrapped.deactivate_offload_conductor()
         self.offload_conductor_enabled = False
         
     def sample_step_hook(self, img_num, total_imgs):
@@ -2493,7 +2575,12 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     system_metrics = {}
                     # GPU VRAM usage (reserved memory matches nvidia-smi)
                     if torch.cuda.is_available():
-                        system_metrics['vram_gb'] = torch.cuda.memory_reserved() / (1024 ** 3)
+                        vram_total = 0.0
+                        for dev_idx in range(torch.cuda.device_count()):
+                            reserved_gb = torch.cuda.memory_reserved(dev_idx) / (1024 ** 3)
+                            system_metrics[f'vram_gpu_{dev_idx}_gb'] = reserved_gb
+                            vram_total += reserved_gb
+                        system_metrics['vram_gb'] = vram_total
                     # CPU and RAM usage
                     system_metrics['cpu_percent'] = psutil.cpu_percent()
                     system_metrics['ram_gb'] = psutil.virtual_memory().used / (1024 ** 3)

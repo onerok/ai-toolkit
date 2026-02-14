@@ -591,5 +591,3 @@ class LoRASpecialNetwork(ToolkitNetworkMixin, LoRANetwork):
                 all_params.append({"lr": unet_lr, "params": list(self.unet_conv_out.parameters())})
 
         return all_params
-
-

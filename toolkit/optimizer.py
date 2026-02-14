@@ -76,7 +76,8 @@ def get_optimizer(
     elif lower_type == 'adam':
         optimizer = torch.optim.Adam(params, lr=float(learning_rate), eps=1e-6, **optimizer_params)
     elif lower_type == 'adamw':
-        optimizer = torch.optim.AdamW(params, lr=float(learning_rate), eps=1e-6, **optimizer_params)
+        from toolkit.optimizers.adamw_step import AdamWStep
+        optimizer = AdamWStep(params, lr=float(learning_rate), eps=1e-6, **optimizer_params)
     elif lower_type == 'lion':
         try:
             from lion_pytorch import Lion

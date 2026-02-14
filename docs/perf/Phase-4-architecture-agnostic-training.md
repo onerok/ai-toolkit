@@ -76,3 +76,39 @@ Run a fixed-seed control and ablations in this order:
 3. If divergence appears with layer offloading, prioritize debugging:
    - `toolkit/memory_management/manager_modules.py`
    - `toolkit/memory_management/manager.py`
+
+## Current Status (2026-02-14)
+
+### Implemented
+- Capability contract defaults on model layers:
+  - `supports_offload_conductor`
+  - `supports_stable_loss`
+  - `stable_loss_requires_batch`
+- Startup compatibility validation in trainer:
+  - feature disable reasons for unsupported fused/offload/stable-loss combinations
+- Conductor decoupled from fused-backward hard prerequisite
+- Optimizer `step_parameter` support added for:
+  - `adafactor`
+  - in-repo `adam8bit` / `adamw8`
+  - `prodigy8bit`
+  - `adamw` (via wrapper)
+- Multi-device VRAM metrics:
+  - aggregate `vram_gb`
+  - per-device `vram_gpu_{idx}_gb`
+
+### Validation Snapshot
+- Automated fixed-seed ablation run:
+  - `output/phase4_ablations/20260214_110624`
+- Control repeat:
+  - `relative_delta=0.0677`, `cosine=0.9977`
+- Ablation relative deltas:
+  - fused: `0.0619`
+  - conductor: `0.0705`
+  - stable_loss: `0.0914`
+  - layer_offloading: `0.1528` (largest deviation)
+
+### Immediate Next Focus
+- Investigate `layer_offloading` drift first:
+  - `toolkit/memory_management/manager.py`
+  - `toolkit/memory_management/manager_modules.py`
+- Hold Phase 5/6 rollout decisions on layer offload path until this drift is explained or reduced.

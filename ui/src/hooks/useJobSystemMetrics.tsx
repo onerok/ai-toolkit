@@ -9,7 +9,8 @@ const SYSTEM_METRIC_KEYS = ['vram_gb', 'ram_gb', 'cpu_percent'];
 const SYSTEM_FALLBACK_KEYS: string[] = [];
 
 function isSystemMetricKey(key: string) {
-  return SYSTEM_METRIC_KEYS.includes(key);
+  if (SYSTEM_METRIC_KEYS.includes(key)) return true;
+  return /^vram_gpu_\d+_gb$/.test(key);
 }
 
 export default function useJobSystemMetrics(jobID: string, reloadInterval: null | number = null) {

@@ -561,6 +561,9 @@ class SDTrainer(BaseSDTrainProcess):
                     pass
 
         # Initialize stable loss if enabled
+        if self.train_config.stable_loss_enabled and not self.train_config.stable_loss_path:
+            print_acc("Warning: disabling train.stable_loss_enabled (train.stable_loss_path is not set).")
+            self.train_config.stable_loss_enabled = False
         if self.train_config.stable_loss_enabled and self.train_config.stable_loss_path:
             print_acc("Initializing stable loss computation...")
             # Make sure VAE is on device for encoding images

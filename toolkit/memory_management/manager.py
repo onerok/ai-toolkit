@@ -3,7 +3,11 @@ from typing import Optional
 
 import torch
 
-from .manager_modules import ConvLayerMemoryManager, LinearLayerMemoryManager
+from .manager_modules import (
+    ConvLayerMemoryManager,
+    LinearLayerMemoryManager,
+    _is_quantized_tensor,
+)
 from .ring_allocator import RingBufferAllocator
 
 LINEAR_MODULES = [
@@ -188,6 +192,12 @@ class MemoryManager:
                     child_module.__class__.__name__ in LINEAR_MODULES
                     and child_module not in modules_processed
                 ):
+                    weight = getattr(child_module, "weight", None)
+                    if _is_quantized_tensor(weight):
+                        # Keep native quantized kernels/dispatch for numerical parity.
+                        module._memory_manager.unmanaged_modules.append(child_module)
+                        modules_processed.append(child_module)
+                        continue
                     skip = False
                     if offload_percent < 1.0:
                         # randomly skip some modules
@@ -215,6 +225,12 @@ class MemoryManager:
                     child_module.__class__.__name__ in CONV_MODULES
                     and child_module not in modules_processed
                 ):
+                    weight = getattr(child_module, "weight", None)
+                    if _is_quantized_tensor(weight):
+                        # Keep native quantized kernels/dispatch for numerical parity.
+                        module._memory_manager.unmanaged_modules.append(child_module)
+                        modules_processed.append(child_module)
+                        continue
                     skip = False
                     if offload_percent < 1.0:
                         # randomly skip some modules

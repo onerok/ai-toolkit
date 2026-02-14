@@ -110,6 +110,127 @@ class Prodigy8bit(Optimizer):
                     param.grad = param._accum_grad
                     del param._accum_grad
 
+    def _find_param_group(self, param):
+        for group in self.param_groups:
+            for candidate in group['params']:
+                if candidate is param:
+                    return group
+        return None
+
+    def begin_fused_update(self):
+        self._fused_ctx = {
+            "d_numerator": 0.0,
+            "d_denom": 0.0,
+        }
+
+    def end_fused_update(self):
+        ctx = getattr(self, "_fused_ctx", None)
+        if ctx is None:
+            return
+
+        global_d_numerator = float(ctx["d_numerator"])
+        global_d_denom = float(ctx["d_denom"])
+        if global_d_denom <= 0:
+            self._fused_ctx = None
+            return
+
+        for group in self.param_groups:
+            d = group['d']
+            d_max = group['d_max']
+            d_coef = group['d_coef']
+            growth_rate = group['growth_rate']
+
+            d_hat = d
+            if global_d_denom > 0 and group['lr'] > 0.0:
+                d_hat = d_coef * global_d_numerator / global_d_denom
+                if d == group['d0']:
+                    d = max(d, d_hat)
+                d_max = max(d_max, d_hat)
+                d = min(d_max, d * growth_rate)
+
+            group['d_numerator'] = global_d_numerator
+            group['d_denom'] = global_d_denom
+            group['d'] = d
+            group['d_max'] = d_max
+            group['d_hat'] = d_hat
+            group['k'] = group['k'] + 1
+
+        self._fused_ctx = None
+
+    @torch.no_grad()
+    def step_parameter(self, p, group=None):
+        if p.grad is None:
+            return
+        if group is None:
+            group = self._find_param_group(p)
+        if group is None:
+            return
+
+        if not hasattr(self, "_fused_ctx") or self._fused_ctx is None:
+            # Keep fused path robust even if manager did not call begin_fused_update.
+            self.begin_fused_update()
+
+        use_bias_correction = group['use_bias_correction']
+        beta1, beta2 = group['betas']
+        beta3 = group['beta3'] if group['beta3'] is not None else math.sqrt(beta2)
+        decouple = group['decouple']
+        decay = group['weight_decay']
+        eps = group['eps']
+        safeguard_warmup = group['safeguard_warmup']
+        d0 = group['d0']
+        d = group['d']
+
+        lr = max(g['lr'] for g in self.param_groups)
+        if use_bias_correction:
+            bias_correction = ((1 - beta2 ** (group['k'] + 1)) ** 0.5) / (1 - beta1 ** (group['k'] + 1))
+        else:
+            bias_correction = 1.0
+        dlr = d * lr * bias_correction
+
+        grad = p.grad.data.to(torch.float32)
+        p_fp32 = p.clone().to(torch.float32)
+        if decay != 0 and not decouple:
+            grad.add_(p_fp32.data, alpha=decay)
+
+        state = self.state[p]
+        if 'step' not in state:
+            state['step'] = 0
+            state['s'] = Auto8bitTensor(torch.zeros_like(p_fp32.data).detach())
+            state['p0'] = Auto8bitTensor(p_fp32.detach().clone())
+            state['exp_avg'] = Auto8bitTensor(torch.zeros_like(p_fp32.data).detach())
+            state['exp_avg_sq'] = Auto8bitTensor(torch.zeros_like(p_fp32.data).detach())
+
+        exp_avg = state['exp_avg'].to(torch.float32)
+        exp_avg_sq = state['exp_avg_sq'].to(torch.float32)
+        s = state['s'].to(torch.float32)
+        p0 = state['p0'].to(torch.float32)
+
+        if group['lr'] > 0.0:
+            self._fused_ctx['d_numerator'] += (d / d0) * dlr * torch.dot(
+                grad.flatten(),
+                (p0.data - p_fp32.data).flatten(),
+            ).item()
+
+            exp_avg.mul_(beta1).add_(grad, alpha=d * (1 - beta1))
+            exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=d * d * (1 - beta2))
+            if safeguard_warmup:
+                s.mul_(beta3).add_(grad, alpha=((d / d0) * d))
+            else:
+                s.mul_(beta3).add_(grad, alpha=((d / d0) * dlr))
+            self._fused_ctx['d_denom'] += s.abs().sum().item()
+
+        state['exp_avg'] = Auto8bitTensor(exp_avg)
+        state['exp_avg_sq'] = Auto8bitTensor(exp_avg_sq)
+        state['s'] = Auto8bitTensor(s)
+        state['p0'] = Auto8bitTensor(p0)
+        state['step'] += 1
+
+        denom = exp_avg_sq.sqrt().add_(d * eps)
+        if decay != 0 and decouple:
+            p_fp32.data.add_(p_fp32.data, alpha=-decay * dlr)
+        p_fp32.data.addcdiv_(exp_avg, denom, value=-dlr)
+        copy_stochastic(p.data, p_fp32.data)
+
     @torch.no_grad()
     def step(self, closure=None):
         """Performs a single optimization step.

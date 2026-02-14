@@ -313,8 +313,9 @@ class _BouncingLinearFn(torch.autograd.Function):
         torch.cuda.current_stream().wait_event(ev_tx_b)
         ev_cu_b_start.record()
 
-        # grad wrt input (GPU)
-        grad_input = grad_out.to(dtype=target_dtype) @ w_bwd_buffers[idx]
+        # Grad wrt input is on the critical path for upstream LoRA updates; use fp32 math
+        # for parity with baseline kernels, then cast back to the caller's dtype.
+        grad_input = grad_out.float() @ w_bwd_buffers[idx].float()
 
         # ensure previous grad-to-CPU transfer that used this slot finished
         torch.cuda.current_stream().wait_event(ev_tx_w_bwd_done)
@@ -322,14 +323,22 @@ class _BouncingLinearFn(torch.autograd.Function):
         # compute grads if float masters exist
         grad_weight = None
         grad_bias = None
+        go_for_param_grads = grad_out.float()
+        x_for_weight_grad = x.float()
         if (
             getattr(weight_cpu, "requires_grad", False)
             and weight_cpu.dtype.is_floating_point
         ):
-            w_grad_buffers[idx] = grad_out.flatten(0, -2).T @ x.flatten(0, -2)
+            w_grad = go_for_param_grads.flatten(0, -2).T @ x_for_weight_grad.flatten(0, -2)
+            if w_grad.dtype != weight_cpu.dtype:
+                w_grad = w_grad.to(dtype=weight_cpu.dtype)
+            w_grad_buffers[idx] = w_grad
         if bias_cpu is not None and getattr(bias_cpu, "requires_grad", False):
             reduce_dims = tuple(range(grad_out.ndim - 1))
-            b_grad_buffers[idx] = grad_out.sum(dim=reduce_dims)
+            b_grad = go_for_param_grads.sum(dim=reduce_dims)
+            if b_grad.dtype != bias_cpu.dtype:
+                b_grad = b_grad.to(dtype=bias_cpu.dtype)
+            b_grad_buffers[idx] = b_grad
 
         ev_cu_b_finish.record()
 
@@ -339,9 +348,11 @@ class _BouncingLinearFn(torch.autograd.Function):
                 getattr(weight_cpu, "requires_grad", False)
                 and weight_cpu.dtype.is_floating_point
             ):
-                grad_weight = w_grad_buffers[idx].to("cpu", non_blocking=True)
+                # Return fully materialized CPU grads to avoid timing-dependent reads by
+                # downstream optimizer code on offloaded parameters.
+                grad_weight = w_grad_buffers[idx].to("cpu", non_blocking=False)
             if bias_cpu is not None and getattr(bias_cpu, "requires_grad", False):
-                grad_bias = b_grad_buffers[idx].to("cpu", non_blocking=True)
+                grad_bias = b_grad_buffers[idx].to("cpu", non_blocking=False)
             state["transfer_weight_backward_finished_event"].record()
 
         return grad_input.to(dtype=grad_out.dtype), grad_weight, grad_bias, None
@@ -541,8 +552,8 @@ class _BouncingConv2dFn(torch.autograd.Function):
 
         grad_input = conv2d_input(
             x.shape,
-            w_bwd_buffers[idx],
-            grad_out.to(dtype=target_dtype),
+            w_bwd_buffers[idx].float(),
+            grad_out.float(),
             stride=stride,
             padding=padding,
             dilation=dilation,
@@ -555,21 +566,29 @@ class _BouncingConv2dFn(torch.autograd.Function):
         # Compute heavy grads on GPU into staging buffers
         grad_weight = None
         grad_bias = None
+        go_for_param_grads = grad_out.float()
+        x_for_weight_grad = x.float()
         if (
             getattr(weight_cpu, "requires_grad", False)
             and weight_cpu.dtype.is_floating_point
         ):
-            w_grad_buffers[idx] = conv2d_weight(
-                x,
+            w_grad = conv2d_weight(
+                x_for_weight_grad,
                 weight_cpu.shape,
-                grad_out,
+                go_for_param_grads,
                 stride=stride,
                 padding=padding,
                 dilation=dilation,
                 groups=groups,
             )
+            if w_grad.dtype != weight_cpu.dtype:
+                w_grad = w_grad.to(dtype=weight_cpu.dtype)
+            w_grad_buffers[idx] = w_grad
         if bias_cpu is not None and getattr(bias_cpu, "requires_grad", False):
-            b_grad_buffers[idx] = grad_out.sum(dim=(0, 2, 3))
+            b_grad = go_for_param_grads.sum(dim=(0, 2, 3))
+            if b_grad.dtype != bias_cpu.dtype:
+                b_grad = b_grad.to(dtype=bias_cpu.dtype)
+            b_grad_buffers[idx] = b_grad
 
         ev_cu_b_finish.record()
 
@@ -580,9 +599,11 @@ class _BouncingConv2dFn(torch.autograd.Function):
                 getattr(weight_cpu, "requires_grad", False)
                 and weight_cpu.dtype.is_floating_point
             ):
-                grad_weight = w_grad_buffers[idx].to("cpu", non_blocking=True)
+                # Return fully materialized CPU grads to avoid timing-dependent reads by
+                # downstream optimizer code on offloaded parameters.
+                grad_weight = w_grad_buffers[idx].to("cpu", non_blocking=False)
             if bias_cpu is not None and getattr(bias_cpu, "requires_grad", False):
-                grad_bias = b_grad_buffers[idx].to("cpu", non_blocking=True)
+                grad_bias = b_grad_buffers[idx].to("cpu", non_blocking=False)
             state["transfer_weight_backward_finished_event"].record()
 
         return (

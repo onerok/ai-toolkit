@@ -273,6 +273,36 @@ class StableDiffusion:
     @property
     def unet_unwrapped(self):
         return unwrap_model(self.unet)
+
+    # Phase 4 capability contract defaults.
+    # Legacy model implementations can override these when needed.
+    def supports_offload_conductor(self) -> bool:
+        unet = self.unet
+        if unet is None:
+            return False
+        unet_unwrapped = unwrap_model(unet)
+        return hasattr(unet_unwrapped, "activate_offload_conductor") and hasattr(
+            unet_unwrapped, "deactivate_offload_conductor"
+        )
+
+    def supports_stable_loss(self) -> bool:
+        return True
+
+    def stable_loss_requires_batch(self) -> bool:
+        return False
+
+    def activate_offload_conductor(self) -> bool:
+        if not self.supports_offload_conductor():
+            return False
+        unet_unwrapped = unwrap_model(self.unet)
+        return bool(unet_unwrapped.activate_offload_conductor())
+
+    def deactivate_offload_conductor(self) -> bool:
+        if not self.supports_offload_conductor():
+            return False
+        unet_unwrapped = unwrap_model(self.unet)
+        unet_unwrapped.deactivate_offload_conductor()
+        return True
     
     def get_bucket_divisibility(self):
         if self.vae is None:

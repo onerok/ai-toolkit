@@ -323,6 +323,34 @@ Phase 7 (Accelerate bypass) ← Independent (can run anytime)
   - compare image strength at fixed LoRA weight and LoRA norm/delta stats
   - if divergence is isolated to layer offloading, inspect `toolkit/memory_management/manager.py` and `toolkit/memory_management/manager_modules.py`
 
+### Latest Phase 4 Ablation Status (2026-02-14)
+
+- Runner/analyzer automation:
+  - `scripts/run_phase4_ablations.py`
+    - fixed-seed config generation (`training_seed`, `train.seed`, `sample.seed`)
+    - auto optimizer compatibility swap (`adamw8bit` -> `adamw8`)
+    - optional `--double-control` and `--analyze`
+  - `scripts/analyze_phase4_ablations.py`
+    - reports `relative_delta`, `cosine_similarity`, and `lora_cosine_similarity`
+    - explicit control-repeat sanity check
+
+- Verified run:
+  - Run root: `output/phase4_ablations/20260214_110624`
+  - Control repeat sanity:
+    - `relative_delta=0.0677`
+    - `cosine=0.9977`
+
+- Per-knob deltas vs control:
+  - `fused_back_pass`: `relative_delta=0.0619`, `cosine=0.9981`
+  - `offload_conductor`: `relative_delta=0.0705`, `cosine=0.9975`
+  - `stable_loss`: `relative_delta=0.0914`, `cosine=0.9958`
+  - `layer_offloading`: `relative_delta=0.1528`, `cosine=0.9884`
+
+- Current interpretation:
+  - Baseline determinism is now acceptable for ablation decisions.
+  - `layer_offloading` is the clear outlier and should be treated as the primary regression to investigate before Phase 5/6 progression.
+  - `fused_back_pass` and `offload_conductor` currently track control-repeat noise band closely.
+
 ---
 
 ## Configuration Summary

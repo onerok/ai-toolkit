@@ -1,4 +1,5 @@
 import math
+import copy
 import torch
 from torch.optim import Optimizer
 from toolkit.optimizers.optimizer_utils import copy_stochastic, Auto8bitTensor, stochastic_grad_accummulation
@@ -59,6 +60,61 @@ class Adam8bit(Optimizer):
                     param.grad = param._accum_grad
                     del param._accum_grad
 
+    def _find_param_group(self, param):
+        for group in self.param_groups:
+            for candidate in group['params']:
+                if candidate is param:
+                    return group
+        return None
+
+    @torch.no_grad()
+    def step_parameter(self, p, group=None):
+        if p.grad is None:
+            return
+        if group is None:
+            group = self._find_param_group(p)
+        if group is None:
+            return
+
+        beta1, beta2 = group['betas']
+        eps = group['eps']
+        lr = group['lr']
+        decay = group['weight_decay']
+        decouple = group['decouple']
+
+        grad = p.grad.data.to(torch.float32)
+        p_fp32 = p.clone().to(torch.float32)
+
+        if decay != 0 and not decouple:
+            grad.add_(p_fp32.data, alpha=decay)
+
+        state = self.state[p]
+        if len(state) == 0:
+            state['step'] = 0
+            state['exp_avg'] = Auto8bitTensor(torch.zeros_like(p_fp32.data).detach())
+            state['exp_avg_sq'] = Auto8bitTensor(torch.zeros_like(p_fp32.data).detach())
+
+        exp_avg = state['exp_avg'].to(torch.float32)
+        exp_avg_sq = state['exp_avg_sq'].to(torch.float32)
+
+        state['step'] += 1
+        bias_correction1 = 1 - beta1 ** state['step']
+        bias_correction2 = 1 - beta2 ** state['step']
+
+        exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+        exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+
+        if decay != 0 and decouple:
+            p_fp32.data.mul_(1 - lr * decay)
+
+        step_size = lr / bias_correction1
+        denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
+        p_fp32.data.addcdiv_(exp_avg, denom, value=-step_size)
+
+        state['exp_avg'] = Auto8bitTensor(exp_avg)
+        state['exp_avg_sq'] = Auto8bitTensor(exp_avg_sq)
+        copy_stochastic(p.data, p_fp32.data)
+
     @torch.no_grad()
     def step(self, closure=None):
         """Performs a single optimization step.
@@ -74,69 +130,16 @@ class Adam8bit(Optimizer):
             loss = closure()
 
         for group in self.param_groups:
-            beta1, beta2 = group['betas']
-            eps = group['eps']
-            lr = group['lr']
-            decay = group['weight_decay']
-            decouple = group['decouple']
-
             for p in group['params']:
-                if p.grad is None:
-                    continue
-
-                grad = p.grad.data.to(torch.float32)
-                p_fp32 = p.clone().to(torch.float32)
-
-                # Apply weight decay (coupled variant)
-                if decay != 0 and not decouple:
-                    grad.add_(p_fp32.data, alpha=decay)
-
-                state = self.state[p]
-
-                # State initialization
-                if len(state) == 0:
-                    state['step'] = 0
-                    # Exponential moving average of gradient values
-                    state['exp_avg'] = Auto8bitTensor(
-                        torch.zeros_like(p_fp32.data).detach())
-                    # Exponential moving average of squared gradient values
-                    state['exp_avg_sq'] = Auto8bitTensor(
-                        torch.zeros_like(p_fp32.data).detach())
-
-                exp_avg = state['exp_avg'].to(torch.float32)
-                exp_avg_sq = state['exp_avg_sq'].to(torch.float32)
-
-                state['step'] += 1
-                bias_correction1 = 1 - beta1 ** state['step']
-                bias_correction2 = 1 - beta2 ** state['step']
-
-                # Adam EMA updates
-                exp_avg.mul_(beta1).add_(grad, alpha=1-beta1)
-                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1-beta2)
-
-                # Apply weight decay (decoupled variant)
-                if decay != 0 and decouple:
-                    p_fp32.data.mul_(1 - lr * decay)
-
-                # Bias correction
-                step_size = lr / bias_correction1
-                denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
-
-                # Take step
-                p_fp32.data.addcdiv_(exp_avg, denom, value=-step_size)
-                
-                # Update state with stochastic rounding
-                state['exp_avg'] = Auto8bitTensor(exp_avg)
-                state['exp_avg_sq'] = Auto8bitTensor(exp_avg_sq)
-                
-                # Apply stochastic rounding to parameters
-                copy_stochastic(p.data, p_fp32.data)
+                self.step_parameter(p, group=group)
 
         return loss
     
     def state_dict(self):
         """Returns the state of the optimizer as a dict."""
-        state_dict = super().state_dict()
+        # `super().state_dict()` can contain references into internal optimizer state.
+        # Deep-copy before converting `Auto8bitTensor` wrappers so training state is untouched.
+        state_dict = copy.deepcopy(super().state_dict())
         
         # Convert Auto8bitTensor objects to regular state dicts
         for param_id, param_state in state_dict['state'].items():
@@ -159,4 +162,3 @@ class Adam8bit(Optimizer):
             for key, value in param_state.items():
                 if isinstance(value, dict) and value.get('_type') == 'Auto8bitTensor':
                     param_state[key] = Auto8bitTensor(value['state'])
-
