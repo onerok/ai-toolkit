@@ -29,7 +29,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Dict, Optional, Tuple
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -233,12 +233,16 @@ def print_comparison(report: dict, use_color: bool = True):
 
 def run_current_benchmark(config: str = None, steps: int = 20,
                           resolution: int = 256, save_at: int = None,
-                          memory_only: bool = False) -> dict:
+                          memory_only: bool = False,
+                          clean_output: bool = False,
+                          validate_generation: bool = False,
+                          clipscore_threshold: Optional[float] = None,
+                          clipscore_model: str = "openai/clip-vit-base-patch32") -> dict:
     """Run current benchmark and return results."""
     from scripts.perf_benchmark import (
-        run_training_benchmark,
         run_memory_only_benchmark,
-    )
+        run_training_benchmark,
+    )  # noqa: E402
 
     if memory_only:
         result = run_memory_only_benchmark()
@@ -248,6 +252,10 @@ def run_current_benchmark(config: str = None, steps: int = 20,
             steps=steps,
             resolution=resolution,
             save_at=save_at,
+            clean_output=clean_output,
+            validate_generation=validate_generation,
+            clipscore_threshold=clipscore_threshold,
+            clipscore_model=clipscore_model,
         )
 
     result.tag = "current"
@@ -273,6 +281,14 @@ def main():
                         help="Save step for current benchmark")
     parser.add_argument("--memory-only", action="store_true",
                         help="Run memory-only benchmark")
+    parser.add_argument("--clean-output", action="store_true",
+                        help="Remove prior benchmark output folder before current run")
+    parser.add_argument("--validate-generation", action="store_true",
+                        help="Run generation smoke validation in current benchmark run")
+    parser.add_argument("--clipscore-threshold", type=float, default=0.20,
+                        help="Minimum CLIPScore when --validate-generation is enabled")
+    parser.add_argument("--clipscore-model", type=str, default="openai/clip-vit-base-patch32",
+                        help="CLIP model ID for CLIPScore calculation")
     parser.add_argument("--vram-threshold", type=float, default=5.0,
                         help="VRAM regression threshold percentage")
     parser.add_argument("--time-threshold", type=float, default=5.0,
@@ -302,6 +318,10 @@ def main():
             resolution=args.resolution,
             save_at=args.save_at,
             memory_only=args.memory_only,
+            clean_output=args.clean_output,
+            validate_generation=args.validate_generation,
+            clipscore_threshold=(args.clipscore_threshold if args.validate_generation else None),
+            clipscore_model=args.clipscore_model,
         )
     else:
         print(f"Loading comparison: {args.compare}")

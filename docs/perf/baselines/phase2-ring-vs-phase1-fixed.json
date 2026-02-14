@@ -1,0 +1,75 @@
+{
+  "baseline_tag": "phase1-fixed",
+  "baseline_commit": "cd1a31d",
+  "current_tag": "phase2-ring-after-clean",
+  "current_commit": "2ff787f",
+  "comparisons": [
+    {
+      "name": "Peak VRAM",
+      "baseline": "20202 MB",
+      "current": "20202 MB",
+      "pct_change": 0.0,
+      "status": "same",
+      "level": "OK"
+    },
+    {
+      "name": "Post-Save VRAM",
+      "baseline": "20202 MB",
+      "current": "20202 MB",
+      "pct_change": 0.0,
+      "status": "same",
+      "level": "OK"
+    },
+    {
+      "name": "VRAM Leaked",
+      "baseline": "0 MB",
+      "current": "0 MB",
+      "pct_change": 0.0,
+      "status": "same",
+      "level": "OK"
+    },
+    {
+      "name": "Avg Step Time",
+      "baseline": "0.645s",
+      "current": "0.645s",
+      "pct_change": 0.04414157552707707,
+      "status": "same",
+      "level": "OK"
+    },
+    {
+      "name": "Post-Save Step Time",
+      "baseline": "0.642s",
+      "current": "0.629s",
+      "pct_change": -1.9507507876030998,
+      "status": "improved",
+      "level": "OK"
+    },
+    {
+      "name": "Slowdown Ratio",
+      "baseline": "0.99x",
+      "current": "0.95x",
+      "pct_change": -3.933839439045873,
+      "status": "improved",
+      "level": "OK"
+    },
+    {
+      "name": "Alloc Retries",
+      "baseline": "0.00",
+      "current": "0.00",
+      "pct_change": 0.0,
+      "status": "same",
+      "level": "OK"
+    },
+    {
+      "name": "Fragmentation",
+      "baseline": "0.00x",
+      "current": "0.00x",
+      "pct_change": 0.0,
+      "status": "same",
+      "level": "OK"
+    }
+  ],
+  "has_warnings": false,
+  "has_failures": false,
+  "overall": "PASS"
+}

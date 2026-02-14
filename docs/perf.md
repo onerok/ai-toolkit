@@ -24,8 +24,8 @@ To iterate quickly without running full training sessions, use these `just` comm
 just perf-memory
 
 # Training benchmark (requires datasets/perf_test/)
-just perf-train                      # 20 steps, save at 10
-just perf-train steps=30 save_at=15  # Custom
+just perf-train                                           # 20 steps, save at 10, generation validation + CLIPScore
+just perf-train steps=30 save_at=15 clipscore_threshold=0.22  # Custom threshold
 
 # Capture baseline
 just perf-baseline "phase-2-before"
@@ -40,14 +40,18 @@ just perf-list
 ### Direct Script Usage
 
 ```bash
-# Run benchmark with options
-uv run python scripts/perf_benchmark.py --steps 20 --resolution 256 --save-at 10
+# Run benchmark with generation validation + CLIPScore threshold
+uv run python scripts/perf_benchmark.py \
+    --steps 20 --resolution 256 --save-at 10 \
+    --clean-output --validate-generation --clipscore-threshold 0.20
 
 # Memory-only test (no actual training, just allocation patterns)
 uv run python scripts/perf_benchmark.py --memory-only
 
-# Capture baseline with notes
-uv run python scripts/collect_baselines.py --tag "my-baseline" --notes "Before Phase 2"
+# Capture baseline with notes + generation validation + CLIPScore threshold
+uv run python scripts/collect_baselines.py \
+    --tag "my-baseline" --notes "Before Phase 2" \
+    --clean-output --validate-generation --clipscore-threshold 0.20
 
 # Compare two baselines
 uv run python scripts/compare_baselines.py \
@@ -84,7 +88,7 @@ This is **not** a one-time baseline capture—it's the test harness you'll use t
 | `collect_baselines.py` | Capture metrics to JSON | `scripts/collect_baselines.py` |
 | `compare_baselines.py` | Compare two baseline files | `scripts/compare_baselines.py` |
 | `perf_test.yaml` | Minimal training config | `config/perf_test.yaml` |
-| Baseline storage | Historical metrics | `docs/perf/baselines/<commit>.json` |
+| Baseline storage | Historical metrics | `docs/perf/baselines/<tag>.json` |
 
 ### Metrics Captured
 
@@ -108,12 +112,16 @@ This is **not** a one-time baseline capture—it's the test harness you'll use t
 │  ─────────────────                                              │
 │  1. git checkout <pre-phase-N-commit>                           │
 │  2. uv run python scripts/collect_baselines.py \                │
+│       --clean-output \                                          │
+│       --validate-generation --clipscore-threshold 0.20 \        │
 │       --tag "phase-N-baseline" --output docs/perf/baselines/    │
 │                                                                 │
 │  Implement Phase N                                              │
 │  ─────────────────                                              │
 │  3. Make changes                                                │
-│  4. Quick iteration: uv run python scripts/perf_benchmark.py    │
+│  4. Quick iteration: uv run python scripts/perf_benchmark.py \  │
+│       --clean-output --validate-generation \                    │
+│       --clipscore-threshold 0.20                                │
 │                                                                 │
 │  After Phase N                                                  │
 │  ─────────────────                                              │
@@ -130,20 +138,22 @@ This is **not** a one-time baseline capture—it's the test harness you'll use t
 ```bash
 # Quick benchmark during development (< 2 min)
 uv run python scripts/perf_benchmark.py --steps 20 --resolution 256
+uv run python scripts/perf_benchmark.py --steps 20 --resolution 256 --clean-output --validate-generation --clipscore-threshold 0.20
 
 # Full benchmark with save cycle
-uv run python scripts/perf_benchmark.py --steps 30 --save-at 15
+uv run python scripts/perf_benchmark.py --steps 30 --save-at 15 --clean-output --validate-generation --clipscore-threshold 0.20
 
 # Memory-only test (no training, just allocation patterns)
 uv run python scripts/perf_benchmark.py --memory-only
 
 # Capture baseline with tag
-uv run python scripts/collect_baselines.py --tag "main-baseline"
+uv run python scripts/collect_baselines.py --tag "main-baseline" --clean-output --validate-generation --clipscore-threshold 0.20
 
 # Compare current vs baseline
 uv run python scripts/compare_baselines.py \
     --baseline docs/perf/baselines/main-baseline.json \
-    --current
+    --current \
+    --clean-output
 
 # Compare two saved baselines
 uv run python scripts/compare_baselines.py \
@@ -216,8 +226,8 @@ Comparison script flags regressions if:
 | **1** | [VRAM Leak Fix](perf/Phase-1-vram-leak-fix.md) ✅ | Critical | Low | 1-2 days | Phase 0 |
 | **2** | [Ring Buffer Allocator](perf/Phase-2-ring-allocator.md) | High | Low-Med | 3-4 days | Phase 1 |
 | **3** | [Fused Backward](perf/Phase-3-fused-backward.md) | High | Medium | 3-5 days | Phase 1 |
-| **4** | [Offload Conductor](perf/Phase-4-offload-conductor.md) | High | Medium | 1-2 weeks | Phase 2 |
-| **5** | [Activation Offload](perf/Phase-5-activation-offload.md) | Medium | Medium | 1-2 weeks | Phase 2, 4 |
+| **4** | [Offload Conductor](perf/Phase-4-offload-conductor.md) | High | Medium | 1-2 weeks | Phase 2, 3 |
+| **5** | [Activation Offload](perf/Phase-5-activation-offload.md) | Medium | Medium | 1-2 weeks | Phase 4 |
 | **6** | [Accelerate Bypass](perf/Phase-6-accelerate-bypass.md) | Low | Low | 1-2 days | None |
 
 ---
@@ -225,25 +235,30 @@ Comparison script flags regressions if:
 ## Dependency Graph
 
 ```
-Phase 0 (Test harness) ✅ ────────────────────────────────────┐
-         │                                                    │
-         ▼                                                    │
-Phase 1 (VRAM leak fix) ✅ ───────────────────────────────────┤
-         │                                                    │
-         ▼                                                    │
-Phase 2 (Ring buffer) ─────────┬──────────────────────────────┤
-         │                     │                              │
-         │                     ▼                              │
-         │             Phase 3 (Fused backward) ──────────────┤
-         │                     │                              │
-         ▼                     │                              │
-Phase 4 (Conductor) ───────────┘                              │
-         │                                                    │
-         ▼                                                    │
-Phase 5 (Activation offload) ─────────────────────────────────┘
-                                                              │
-Phase 6 (Accelerate bypass) ← Independent ────────────────────┘
+Phase 0 (Test harness) ✅
+         │
+         ▼
+Phase 1 (VRAM leak fix) ✅
+         │
+         ├───────────────────────────┐
+         │                           │
+         ▼                           ▼
+Phase 2 (Ring buffer)        Phase 3 (Fused backward)
+         │                           │
+         ▼                           │
+Phase 4 (Conductor) ←────────────────┘
+         │                   (can run in parallel,
+         ▼                    merged at Phase 4)
+Phase 5 (Activation offload)
+
+
+Phase 6 (Accelerate bypass) ← Independent (can run anytime)
 ```
+
+**Notes:**
+- Phases 2 and 3 can be implemented in parallel after Phase 1
+- Phase 4 integrates work from both Phase 2 (ring allocator) and Phase 3 (fused backward)
+- Phase 6 has no dependencies and can be done at any point
 
 ---
 
@@ -265,7 +280,7 @@ Phase 6 (Accelerate bypass) ← Independent ────────────
 
 ### Weeks 2-3: Foundation
 - **Phase 2:** Static ring buffer allocator (parallel track A)
-  - Pre-allocated GPU/CPU buffers
+  - Pre-allocated GPU staging buffer
   - 16-byte aligned allocations
   - Integration with bouncing modules
 
@@ -300,12 +315,7 @@ memory_management:
 
   # Phase 2: Ring buffer allocation
   use_ring_allocator: true
-  ring_allocator_gpu_fraction: 0.25
-  ring_allocator_cpu_fraction: 0.50
-
-  # Phase 3: Fused backward
-  fused_back_pass: false
-  # Note: gradient_accumulation_steps=1 required for memory benefit
+  ring_allocator_gpu_fraction: 0.25  # Fraction of model size for GPU staging
 
   # Phase 4: Coordinated offloading
   use_offload_conductor: false
@@ -317,6 +327,11 @@ memory_management:
 
   # Phase 6: Accelerate bypass
   bypass_accelerate: null  # null = auto-detect
+
+train:
+  # Phase 3: Fused backward
+  fused_back_pass: false
+  # Note: strongest memory benefit when gradient_accumulation=1 and gradient_accumulation_steps=1
 ```
 
 ---

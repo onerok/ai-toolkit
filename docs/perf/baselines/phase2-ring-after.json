@@ -1,0 +1,63 @@
+{
+  "tag": "phase2-ring-after",
+  "commit": "2ff787f",
+  "timestamp": "2026-02-13T18:38:06.894572",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "vram_gb": 31.84234619140625,
+    "cuda_version": "12.8",
+    "driver_version": "591.59",
+    "torch_version": "2.10.0+cu128",
+    "python_version": "3.11.11"
+  },
+  "config": {
+    "config_path": "config/perf_test.yaml",
+    "steps": 20,
+    "resolution": 256,
+    "save_at": 10,
+    "dataset_path": null
+  },
+  "metrics": {
+    "peak_vram_mb": 17366.0,
+    "pre_save_vram_mb": 0.0,
+    "save_peak_vram_mb": 0.0,
+    "post_save_vram_mb": 0.0,
+    "leaked_mb": 0.0,
+    "avg_step_time_s": 2.5427162766456606,
+    "pre_save_step_time_s": 0.0,
+    "post_save_step_time_s": 0.0,
+    "slowdown_ratio": 1.0,
+    "save_duration_s": 0.0,
+    "num_alloc_retries": 0,
+    "fragmentation_ratio": 0.003032399201384872,
+    "total_duration_s": 50.85432553291321,
+    "step_count": 0
+  },
+  "raw": {
+    "step_times": [],
+    "memory_snapshots": [
+      {
+        "timestamp": 1771029487.0502143,
+        "label": "pre_training",
+        "allocated_mb": 0.0,
+        "reserved_mb": 0.0,
+        "max_allocated_mb": 0.0,
+        "num_alloc_retries": 0
+      },
+      {
+        "timestamp": 1771029537.904772,
+        "label": "post_training",
+        "allocated_mb": 17313.33935546875,
+        "reserved_mb": 17366.0,
+        "max_allocated_mb": 19825.34716796875,
+        "num_alloc_retries": 0
+      }
+    ]
+  },
+  "git": {
+    "commit": "2ff787f",
+    "branch": "feat/system-metrics-graph",
+    "dirty": true
+  },
+  "notes": "After Phase 2 ring allocator commit 2ff787f"
+}

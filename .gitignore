@@ -184,3 +184,5 @@ aitk_db.db
 /notes.md
 /data
 .caption_service.pid
+
+tmp/

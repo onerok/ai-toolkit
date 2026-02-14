@@ -22,6 +22,8 @@ Usage:
 import argparse
 import gc
 import json
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -34,7 +36,9 @@ from typing import Any, Callable, ClassVar, Dict, List, Optional
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import numpy as np  # noqa: E402
 import torch  # noqa: E402
+from PIL import Image  # noqa: E402
 
 
 @dataclass
@@ -131,6 +135,15 @@ class BenchmarkMetrics:
     save_duration_s: float = 0.0
     num_alloc_retries: int = 0
     fragmentation_ratio: float = 0.0
+    output_validation_passed: bool = False
+    output_validation_message: str = ""
+    validated_output_path: str = ""
+    generation_validation_passed: bool = False
+    generation_validation_message: str = ""
+    generation_validation_image_path: str = ""
+    generation_clipscore: float = 0.0
+    generation_clipscore_threshold: float = 0.0
+    generation_clipscore_model: str = ""
 
     def compute_summary(self, save_at_step: Optional[int] = None):
         """Compute summary metrics from raw data."""
@@ -209,6 +222,15 @@ class BenchmarkResult:
                 "save_duration_s": self.metrics.save_duration_s,
                 "num_alloc_retries": self.metrics.num_alloc_retries,
                 "fragmentation_ratio": self.metrics.fragmentation_ratio,
+                "output_validation_passed": self.metrics.output_validation_passed,
+                "output_validation_message": self.metrics.output_validation_message,
+                "validated_output_path": self.metrics.validated_output_path,
+                "generation_validation_passed": self.metrics.generation_validation_passed,
+                "generation_validation_message": self.metrics.generation_validation_message,
+                "generation_validation_image_path": self.metrics.generation_validation_image_path,
+                "generation_clipscore": self.metrics.generation_clipscore,
+                "generation_clipscore_threshold": self.metrics.generation_clipscore_threshold,
+                "generation_clipscore_model": self.metrics.generation_clipscore_model,
                 "total_duration_s": self.metrics.total_duration_s,
                 "step_count": len(self.metrics.step_times),
             },
@@ -338,6 +360,240 @@ def _instrument_training_processes(job, metrics: BenchmarkMetrics, save_at: Opti
     return teardowns
 
 
+def _cleanup_training_outputs(config: dict) -> list[str]:
+    """Remove previous training run folders so benchmarks start from step 0."""
+    removed: list[str] = []
+    cfg = config.get("config", {})
+    run_name = cfg.get("name", "perf_benchmark")
+    for process in cfg.get("process", []):
+        training_folder = process.get("training_folder")
+        if not training_folder:
+            continue
+        target = Path(training_folder) / run_name
+        if target.exists():
+            shutil.rmtree(target)
+            removed.append(str(target))
+    return removed
+
+
+def _find_latest_lora_output(config: dict) -> Optional[Path]:
+    cfg = config.get("config", {})
+    run_name = cfg.get("name", "perf_benchmark")
+    candidates: list[Path] = []
+    for process in cfg.get("process", []):
+        training_folder = process.get("training_folder")
+        if not training_folder:
+            continue
+        run_dir = Path(training_folder) / run_name
+        if run_dir.exists():
+            candidates.extend(run_dir.glob("*.safetensors"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _normalize_lora_pair_key(key: str, marker: str) -> str:
+    # e.g. ".lora_A.weight", ".lora_down.weight", ".lora_B"
+    pattern = rf"{re.escape(marker)}(\.weight)?$"
+    return re.sub(pattern, "", key)
+
+
+def _validate_lora_output(path: Path) -> tuple[bool, str]:
+    try:
+        from safetensors import safe_open
+    except Exception as exc:
+        return False, f"validation import failed: {exc}"
+
+    try:
+        with safe_open(str(path), framework="pt", device="cpu") as f:
+            keys = list(f.keys())
+            if not keys:
+                return False, "checkpoint is empty"
+
+            # Basic shape sanity on first N tensors to catch obvious corruption.
+            for key in keys[: min(64, len(keys))]:
+                shape = tuple(f.get_tensor(key).shape)
+                if any(dim <= 0 for dim in shape):
+                    return False, f"invalid tensor shape for key '{key}': {shape}"
+
+            a_keys = [k for k in keys if ".lora_A" in k]
+            b_keys = [k for k in keys if ".lora_B" in k]
+            down_keys = [k for k in keys if ".lora_down" in k]
+            up_keys = [k for k in keys if ".lora_up" in k]
+
+            pair_count = 0
+            if a_keys or b_keys:
+                a_norm = {_normalize_lora_pair_key(k, ".lora_A") for k in a_keys}
+                b_norm = {_normalize_lora_pair_key(k, ".lora_B") for k in b_keys}
+                pair_count += len(a_norm & b_norm)
+            if down_keys or up_keys:
+                d_norm = {_normalize_lora_pair_key(k, ".lora_down") for k in down_keys}
+                u_norm = {_normalize_lora_pair_key(k, ".lora_up") for k in up_keys}
+                pair_count += len(d_norm & u_norm)
+
+            if pair_count <= 0:
+                return False, "no valid LoRA key pairs found"
+
+            return True, f"valid LoRA safetensors ({len(keys)} tensors, {pair_count} paired modules)"
+    except Exception as exc:
+        return False, f"failed to load safetensors: {exc}"
+
+
+def _build_generation_validation_config(training_config: dict, lora_path: Path) -> dict:
+    cfg = training_config.get("config", {})
+    processes = cfg.get("process", [])
+    if not processes:
+        raise ValueError("training config has no process entries")
+    proc = processes[0]
+
+    model_cfg = dict(proc.get("model", {}))
+    model_cfg["lora_path"] = str(lora_path)
+
+    resolution = 256
+    datasets = proc.get("datasets", [])
+    if datasets and datasets[0].get("resolution"):
+        res = datasets[0]["resolution"][0]
+        if isinstance(res, int):
+            resolution = res
+
+    sample_cfg = proc.get("sample", {})
+    sampler = sample_cfg.get("sampler", "flowmatch")
+
+    output_folder = proc.get("training_folder", "output/perf_test")
+    output_folder = str(Path(output_folder) / "_benchmark_generation_validation")
+
+    validation_prompt = "a portrait photo of a person in natural light"
+
+    return {
+        "job": "generate",
+        "config": {
+            "name": "perf_generation_validation",
+            "device": proc.get("device", "cuda:0"),
+            "process": [
+                {
+                    "type": "to_folder",
+                    "device": proc.get("device", "cuda:0"),
+                    "output_folder": output_folder,
+                    "dtype": "bf16",
+                    "model": model_cfg,
+                    "generate": {
+                        "sampler": sampler,
+                        "prompts": [validation_prompt],
+                        "width": resolution,
+                        "height": resolution,
+                        "sample_steps": 8,
+                        "guidance_scale": 3.5,
+                        "seed": 42,
+                        "ext": "png",
+                    },
+                }
+            ],
+        },
+        "meta": {
+            "name": "perf_generation_validation",
+            "version": "1.0",
+        },
+    }
+
+
+def _validate_generated_image(path: Path) -> tuple[bool, str]:
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return False, "generated image missing or empty"
+        with Image.open(path) as img:
+            arr = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+        std = float(arr.std())
+        mean = float(arr.mean())
+        if not np.isfinite(std) or not np.isfinite(mean):
+            return False, "image stats are non-finite"
+        if std < 0.02:
+            return False, f"image variance too low (std={std:.4f})"
+        if arr.min() == arr.max():
+            return False, "image is constant"
+        return True, f"image looks non-degenerate (mean={mean:.3f}, std={std:.3f})"
+    except Exception as exc:
+        return False, f"failed to validate generated image: {exc}"
+
+
+def _compute_clipscore(image_path: Path, prompt: str, model_id: str) -> tuple[bool, float, str]:
+    try:
+        from transformers import CLIPModel, CLIPProcessor
+    except Exception as exc:
+        return False, 0.0, f"CLIP dependencies unavailable: {exc}"
+
+    try:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        model = CLIPModel.from_pretrained(model_id).to(device)
+        processor = CLIPProcessor.from_pretrained(model_id)
+        with Image.open(image_path).convert("RGB") as img:
+            inputs = processor(text=[prompt], images=[img], return_tensors="pt", padding=True)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        with torch.no_grad():
+            outputs = model(**inputs)
+            text = outputs.text_embeds
+            image = outputs.image_embeds
+            text = text / text.norm(dim=-1, keepdim=True)
+            image = image / image.norm(dim=-1, keepdim=True)
+            score = float((image * text).sum(dim=-1).item())
+        return True, score, ""
+    except Exception as exc:
+        return False, 0.0, f"failed to compute CLIPScore: {exc}"
+
+
+def _run_generation_smoke_validation(
+    training_config: dict,
+    lora_path: Path,
+    clipscore_threshold: Optional[float],
+    clipscore_model: str,
+) -> tuple[bool, str, str, Optional[float]]:
+    from toolkit.job import get_job
+
+    gen_cfg = _build_generation_validation_config(training_config, lora_path)
+    output_folder = Path(
+        gen_cfg["config"]["process"][0]["output_folder"]
+    )
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    for stale in output_folder.glob("*"):
+        if stale.is_file():
+            stale.unlink()
+
+    job = get_job(gen_cfg)
+    try:
+        job.run()
+    finally:
+        job.cleanup()
+
+    images = sorted(
+        [p for p in output_folder.glob("*.png")] + [p for p in output_folder.glob("*.jpg")],
+        key=lambda p: p.stat().st_mtime,
+    )
+    if not images:
+        return False, "generation produced no image files", "", None
+    latest = images[-1]
+    ok, msg = _validate_generated_image(latest)
+    if not ok:
+        return ok, msg, str(latest), None
+
+    clipscore: Optional[float] = None
+    if clipscore_threshold is not None:
+        prompt = gen_cfg["config"]["process"][0]["generate"]["prompts"][0]
+        clip_ok, score, clip_err = _compute_clipscore(latest, prompt, clipscore_model)
+        if not clip_ok:
+            return False, clip_err, str(latest), None
+        clipscore = score
+        if score < clipscore_threshold:
+            return (
+                False,
+                f"CLIPScore below threshold ({score:.4f} < {clipscore_threshold:.4f})",
+                str(latest),
+                clipscore,
+            )
+        msg = f"{msg}; CLIPScore={score:.4f} (threshold={clipscore_threshold:.4f})"
+
+    return True, msg, str(latest), clipscore
+
+
 def get_git_commit() -> str:
     """Get current git commit hash."""
     try:
@@ -441,6 +697,11 @@ def run_training_benchmark(
     resolution: int = 256,
     save_at: Optional[int] = None,
     dataset_path: Optional[str] = None,
+    clean_output: bool = False,
+    validate_output: bool = True,
+    validate_generation: bool = False,
+    clipscore_threshold: Optional[float] = None,
+    clipscore_model: str = "openai/clip-vit-base-patch32",
 ) -> BenchmarkResult:
     """
     Run actual training benchmark with timing and memory measurements.
@@ -510,6 +771,15 @@ def run_training_benchmark(
                     for ds in proc["datasets"]:
                         ds["resolution"] = [resolution]
 
+        if clean_output:
+            removed_paths = _cleanup_training_outputs(config)
+            if removed_paths:
+                print("  Cleaned previous benchmark outputs:")
+                for path in removed_paths:
+                    print(f"    - {path}")
+            else:
+                print("  No previous benchmark outputs to clean")
+
         # Capture pre-training memory
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -534,6 +804,39 @@ def run_training_benchmark(
 
         # Capture post-training memory
         result.metrics.memory_snapshots.append(MemorySnapshot.capture("post_training"))
+
+        if validate_output:
+            latest_output = _find_latest_lora_output(config)
+            if latest_output is None:
+                result.metrics.output_validation_passed = False
+                result.metrics.output_validation_message = "no .safetensors output found to validate"
+            else:
+                ok, message = _validate_lora_output(latest_output)
+                result.metrics.output_validation_passed = ok
+                result.metrics.output_validation_message = message
+                result.metrics.validated_output_path = str(latest_output)
+                status = "PASS" if ok else "FAIL"
+                print(f"  Output validation [{status}]: {message}")
+                print(f"  Validated file: {latest_output}")
+
+                if validate_generation:
+                    ok, msg, image_path, clipscore = _run_generation_smoke_validation(
+                        config,
+                        latest_output,
+                        clipscore_threshold=clipscore_threshold,
+                        clipscore_model=clipscore_model,
+                    )
+                    result.metrics.generation_validation_passed = ok
+                    result.metrics.generation_validation_message = msg
+                    result.metrics.generation_validation_image_path = image_path
+                    if clipscore is not None:
+                        result.metrics.generation_clipscore = clipscore
+                        result.metrics.generation_clipscore_threshold = clipscore_threshold or 0.0
+                        result.metrics.generation_clipscore_model = clipscore_model
+                    gstatus = "PASS" if ok else "FAIL"
+                    print(f"  Generation validation [{gstatus}]: {msg}")
+                    if image_path:
+                        print(f"  Generated file: {image_path}")
 
         # Fallback estimate if hooks did not produce step-level timings
         if steps > 0 and not result.metrics.step_times:
@@ -585,6 +888,24 @@ def print_result_summary(result: BenchmarkResult):
         print(f"  Leaked:             {m.leaked_mb:.0f} MB")
     print(f"  Alloc retries:      {m.num_alloc_retries}")
     print(f"  Fragmentation:      {m.fragmentation_ratio:.1%}")
+    if m.output_validation_message:
+        status = "PASS" if m.output_validation_passed else "FAIL"
+        print("\nOutput validation:")
+        print(f"  Status:             {status}")
+        print(f"  Message:            {m.output_validation_message}")
+        if m.validated_output_path:
+            print(f"  File:               {m.validated_output_path}")
+    if m.generation_validation_message:
+        status = "PASS" if m.generation_validation_passed else "FAIL"
+        print("\nGeneration validation:")
+        print(f"  Status:             {status}")
+        print(f"  Message:            {m.generation_validation_message}")
+        if m.generation_validation_image_path:
+            print(f"  File:               {m.generation_validation_image_path}")
+        if m.generation_clipscore_model:
+            print(f"  CLIP model:         {m.generation_clipscore_model}")
+            print(f"  CLIPScore:          {m.generation_clipscore:.4f}")
+            print(f"  Threshold:          {m.generation_clipscore_threshold:.4f}")
 
     print("\nMemory snapshots:")
     for snap in result.metrics.memory_snapshots:
@@ -608,6 +929,16 @@ def main():
                         help="Path to dataset folder")
     parser.add_argument("--memory-only", action="store_true",
                         help="Run memory-only test (no actual training)")
+    parser.add_argument("--clean-output", action="store_true",
+                        help="Remove prior training_folder/name output before running")
+    parser.add_argument("--no-validate-output", action="store_true",
+                        help="Skip post-run LoRA safetensors validation")
+    parser.add_argument("--validate-generation", action="store_true",
+                        help="Run post-run generation smoke validation using saved LoRA")
+    parser.add_argument("--clipscore-threshold", type=float, default=0.20,
+                        help="Minimum CLIPScore when --validate-generation is enabled")
+    parser.add_argument("--clipscore-model", type=str, default="openai/clip-vit-base-patch32",
+                        help="CLIP model ID for CLIPScore calculation")
     parser.add_argument("--output", "-o", type=str, default=None,
                         help="Output JSON file path")
     parser.add_argument("--tag", "-t", type=str, default="",
@@ -627,6 +958,11 @@ def main():
             resolution=args.resolution,
             save_at=args.save_at,
             dataset_path=args.dataset,
+            clean_output=args.clean_output,
+            validate_output=not args.no_validate_output,
+            validate_generation=args.validate_generation,
+            clipscore_threshold=(args.clipscore_threshold if args.validate_generation else None),
+            clipscore_model=args.clipscore_model,
         )
 
     if args.tag:

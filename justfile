@@ -71,16 +71,16 @@ perf-memory:
     uv run python scripts/perf_benchmark.py --memory-only
 
 # Run benchmark with training (requires datasets/perf_test/)
-perf-train steps="20" save_at="10":
-    uv run python scripts/perf_benchmark.py --steps {{steps}} --save-at {{save_at}}
+perf-train steps="20" save_at="10" clipscore_threshold="0.20":
+    uv run python scripts/perf_benchmark.py --steps {{steps}} --save-at {{save_at}} --clean-output --validate-generation --clipscore-threshold {{clipscore_threshold}}
 
 # Capture baseline with a tag (memory-only)
 perf-baseline tag:
     uv run python scripts/collect_baselines.py --tag "{{tag}}" --memory-only
 
 # Capture baseline with training (requires datasets/perf_test/)
-perf-baseline-train tag steps="20" save_at="10":
-    uv run python scripts/collect_baselines.py --tag "{{tag}}" --steps {{steps}} --save-at {{save_at}}
+perf-baseline-train tag steps="20" save_at="10" clipscore_threshold="0.20":
+    uv run python scripts/collect_baselines.py --tag "{{tag}}" --steps {{steps}} --save-at {{save_at}} --clean-output --validate-generation --clipscore-threshold {{clipscore_threshold}}
 
 # Compare current state against a saved baseline
 perf-compare baseline:

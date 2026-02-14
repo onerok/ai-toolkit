@@ -30,16 +30,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.perf_benchmark import (
-    run_training_benchmark,
-    run_memory_only_benchmark,
-    get_git_commit,
-    print_result_summary,
-)
-
-
 def get_git_status() -> dict:
     """Get git status info for reproducibility."""
+    from scripts.perf_benchmark import get_git_commit
+
     info = {
         "commit": get_git_commit(),
         "branch": "",
@@ -72,6 +66,12 @@ def get_git_status() -> dict:
 
 
 def main():
+    from scripts.perf_benchmark import (
+        print_result_summary,
+        run_memory_only_benchmark,
+        run_training_benchmark,
+    )
+
     parser = argparse.ArgumentParser(description="Collect performance baseline")
 
     parser.add_argument("--tag", "-t", type=str, required=True,
@@ -88,6 +88,14 @@ def main():
                         help="Step to trigger checkpoint save (for VRAM leak testing)")
     parser.add_argument("--memory-only", action="store_true",
                         help="Run memory-only test (faster, no dataset needed)")
+    parser.add_argument("--clean-output", action="store_true",
+                        help="Remove prior benchmark output folder before training run")
+    parser.add_argument("--validate-generation", action="store_true",
+                        help="Run generation smoke validation after benchmark run")
+    parser.add_argument("--clipscore-threshold", type=float, default=0.20,
+                        help="Minimum CLIPScore when --validate-generation is enabled")
+    parser.add_argument("--clipscore-model", type=str, default="openai/clip-vit-base-patch32",
+                        help="CLIP model ID for CLIPScore calculation")
     parser.add_argument("--notes", type=str, default="",
                         help="Optional notes to include in baseline")
 
@@ -114,6 +122,10 @@ def main():
             steps=args.steps,
             resolution=args.resolution,
             save_at=args.save_at,
+            clean_output=args.clean_output,
+            validate_generation=args.validate_generation,
+            clipscore_threshold=(args.clipscore_threshold if args.validate_generation else None),
+            clipscore_model=args.clipscore_model,
         )
 
     result.tag = args.tag
