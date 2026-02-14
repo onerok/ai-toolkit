@@ -209,18 +209,22 @@ class Flux2Model(BaseModel):
             transformer.to(self.device_torch, dtype=dtype)
         flush()
 
-        if (
+        if self.model_config.use_offload_conductor and hasattr(transformer, "configure_offload_conductor"):
+            offload_fraction = float(self.model_config.layer_offloading_transformer_percent or 0.0)
+            if offload_fraction <= 0.0:
+                # Conductor-only ablations can disable layer_offloading but still need a policy.
+                offload_fraction = 0.5
+            transformer.configure_offload_conductor(
+                train_device=self.device_torch,
+                temp_device=torch.device("cpu"),
+                layer_offload_fraction=offload_fraction,
+                strict_gradient_offload=True,
+            )
+        elif (
             self.model_config.layer_offloading
             and self.model_config.layer_offloading_transformer_percent > 0
         ):
-            if self.model_config.use_offload_conductor and hasattr(transformer, "configure_offload_conductor"):
-                transformer.configure_offload_conductor(
-                    train_device=self.device_torch,
-                    temp_device=torch.device("cpu"),
-                    layer_offload_fraction=self.model_config.layer_offloading_transformer_percent,
-                    strict_gradient_offload=True,
-                )
-            elif self.model_config.quantize:
+            if self.model_config.quantize:
                 self.print_and_status_update(
                     "Warning: skipping transformer layer offloading for quantized Flux2 transformer."
                 )
@@ -512,6 +516,34 @@ class Flux2Model(BaseModel):
 
     def get_te_has_grad(self):
         return False
+
+    def get_offload_conductor_stats(self):
+        transformer = getattr(self, "model", None)
+        if transformer is None:
+            return None
+        transformer = unwrap_model(transformer)
+        if hasattr(transformer, "get_offload_conductor_stats"):
+            return transformer.get_offload_conductor_stats()
+        return None
+
+    def get_runtime_feature_states(self) -> dict[str, bool]:
+        transformer = getattr(self, "model", None)
+        conductor_active = False
+        if transformer is not None:
+            transformer = unwrap_model(transformer)
+            conductor = getattr(transformer, "offload_conductor", None)
+            if conductor is not None:
+                conductor_active = bool(getattr(conductor, "is_active", False))
+
+        layer_offloading_enabled = bool(getattr(self.model_config, "layer_offloading", False))
+        transformer_pct = float(getattr(self.model_config, "layer_offloading_transformer_percent", 0.0) or 0.0)
+        text_encoder_pct = float(getattr(self.model_config, "layer_offloading_text_encoder_percent", 0.0) or 0.0)
+        return {
+            "offload_conductor_active": conductor_active,
+            "layer_offloading_active": bool(
+                layer_offloading_enabled and (transformer_pct > 0.0 or text_encoder_pct > 0.0)
+            ),
+        }
 
     def save_model(self, output_path, meta, save_dtype):
         if not output_path.endswith(".safetensors"):
