@@ -1,0 +1,79 @@
+{
+  "tag": "phase5-offload-fraction-pareto-20260214",
+  "timestamp": "2026-02-14",
+  "sweep_root": "output/phase5_offload_fraction_sweep/20260214_175255",
+  "memory_capture_root": "output/phase5_offload_fraction_sweep/20260214_175255/memory_capture",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "vram_gb": 31.84234619140625
+  },
+  "method": {
+    "steps": 20,
+    "save_at": 10,
+    "repeats_per_case": 2,
+    "fractions": [0.25, 0.5, 0.75],
+    "cases": ["control", "offload_conductor"]
+  },
+  "activation_checks": {
+    "control": {"requested": false, "effective": false, "active": false},
+    "offload_conductor": {"requested": true, "effective": true, "active": true},
+    "analyzer_exit_code": 0,
+    "analyzer_warnings": "none"
+  },
+  "presets": {
+    "speed": {
+      "fraction": 0.25,
+      "offload_metrics_avg": {
+        "peak_vram_mb": 24066.0,
+        "post_save_vram_mb": 24004.0,
+        "avg_step_time_s": 1.8827718557244224,
+        "steps_per_s": 0.5311317974929236,
+        "num_alloc_retries_max": 0
+      },
+      "vs_control_same_fraction": {
+        "delta_peak_vram_mb": 3860.0,
+        "delta_post_save_vram_mb": 3798.0,
+        "speed_ratio_offload_over_control": 2.486820983865167,
+        "steps_per_s_ratio_offload_over_control": 0.4021198174247909
+      }
+    },
+    "balanced": {
+      "fraction": 0.5,
+      "offload_metrics_avg": {
+        "peak_vram_mb": 23024.0,
+        "post_save_vram_mb": 22818.0,
+        "avg_step_time_s": 3.0635881626993067,
+        "steps_per_s": 0.32641463110985086,
+        "num_alloc_retries_max": 0
+      },
+      "vs_control_same_fraction": {
+        "delta_peak_vram_mb": 2818.0,
+        "delta_post_save_vram_mb": 2612.0,
+        "speed_ratio_offload_over_control": 4.08750513897699,
+        "steps_per_s_ratio_offload_over_control": 0.24464801046104062
+      }
+    },
+    "memory": {
+      "fraction": 0.75,
+      "offload_metrics_avg": {
+        "peak_vram_mb": 21984.0,
+        "post_save_vram_mb": 21504.0,
+        "avg_step_time_s": 4.251695493374427,
+        "steps_per_s": 0.23520028693455036,
+        "num_alloc_retries_max": 0
+      },
+      "vs_control_same_fraction": {
+        "delta_peak_vram_mb": 1778.0,
+        "delta_post_save_vram_mb": 1298.0,
+        "speed_ratio_offload_over_control": 5.677411334230643,
+        "steps_per_s_ratio_offload_over_control": 0.17613661246820894
+      }
+    }
+  },
+  "source_artifacts": [
+    "output/phase5_offload_fraction_sweep/20260214_175255/summary.tsv",
+    "output/phase5_offload_fraction_sweep/20260214_175255/memory_capture/metrics_detailed.tsv",
+    "output/phase5_offload_fraction_sweep/20260214_175255/memory_capture/metrics_summary.tsv",
+    "output/phase5_offload_fraction_sweep/20260214_175255/memory_capture/metrics_pairwise.tsv"
+  ]
+}

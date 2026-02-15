@@ -638,6 +638,18 @@ model:
   # use_offload_conductor: false
 ```
 
+## Pareto Reference (2026-02-14)
+
+User-facing offload-fraction tradeoff results (speed vs VRAM) are documented in:
+- `docs/perf/Phase-5-offload-fraction-pareto-20260214.md`
+
+Machine-readable baseline snapshot:
+- `docs/perf/baselines/phase5-offload-fraction-pareto-20260214.json`
+
+Raw sweep/memory artifacts referenced by those docs:
+- `output/phase5_offload_fraction_sweep/20260214_175255/summary.tsv`
+- `output/phase5_offload_fraction_sweep/20260214_175255/memory_capture/metrics_summary.tsv`
+
 ---
 
 ## Verification
