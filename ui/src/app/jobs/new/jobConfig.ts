@@ -109,6 +109,10 @@ export const defaultJobConfig: JobConfig = {
           qtype_te: 'qfloat8',
           arch: 'flex1',
           low_vram: false,
+          layer_offloading: false,
+          layer_offloading_transformer_percent: 0.5,
+          layer_offloading_text_encoder_percent: 0.0,
+          use_offload_conductor: false,
           model_kwargs: {},
         },
         sample: {
@@ -195,6 +199,10 @@ export const migrateJobConfig = (jobConfig: JobConfig): JobConfig => {
     jobConfig.config.process[0].model.layer_offloading = (jobConfig.config.process[0].model.auto_memory ||
       false) as boolean;
     delete jobConfig.config.process[0].model.auto_memory;
+  }
+
+  if (!('use_offload_conductor' in jobConfig.config.process[0].model)) {
+    jobConfig.config.process[0].model.use_offload_conductor = false;
   }
 
   if (!('logging' in jobConfig.config.process[0])) {
