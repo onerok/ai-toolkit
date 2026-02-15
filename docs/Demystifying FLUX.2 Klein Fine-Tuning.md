@@ -1,6 +1,6 @@
 # Demystifying FLUX.2 Klein Fine-Tuning
 
-A practical, experiment-informed guide to LoRA training on FLUX.2 Klein. Inspired by [spacepxl/demystifying-sd-finetuning](https://github.com/spacepxl/demystifying-sd-finetuning) — same philosophy, new architecture. Klein-specific findings draw heavily from [Calvin Herbst's](https://www.youtube.com/@CalvinHerbst) 50+ isolated-variable training experiments across FLUX.2 dev and Klein.
+A practical, experiment-informed guide to LoRA training on FLUX.2 Klein. Inspired by [spacepxl/demystifying-sd-finetuning](https://github.com/spacepxl/demystifying-sd-finetuning) — same philosophy, new architecture. Klein-specific findings draw heavily from [Calvin Herbst's](https://www.youtube.com/@CalvinHerbst) 50+ isolated-variable training experiments across FLUX.2 dev and Klein 9B.
 
 The original repo proved that most fine-tuning advice is vibes-based and wrong, and that you can cut through it with deterministic validation loss and controlled experiments. Everything here follows that principle: measure don't guess, change one variable at a time, and stop training when the loss curve tells you to.
 
@@ -99,6 +99,8 @@ This produces smooth loss curves instead of the noisy mess you get from training
 
 This methodology transfers directly to Klein. The architecture changed; the math of overfitting did not. If you're training without validation loss, you're guessing when to stop, and you will guess wrong.
 
+**A note on complementary approaches:** Herbst's testing methodology is different from spacepxl's but valuable in its own right. Rather than deterministic loss curves, he evaluates visually: generating images from **out-of-distribution prompts** (e.g., "dog on a log" — tokens that appear nowhere in his training data) to test whether the LoRA transfers style rather than memorizing content. He also uses **RGB waveform analysis** to objectively measure tonal characteristics across training runs. Both approaches — quantitative loss curves and structured visual evaluation — are useful. The loss curve tells you *when* to stop; visual evaluation tells you *what* the model actually learned.
+
 ### How to implement it
 
 Most training tools don't natively support deterministic validation the way spacepxl's custom scripts did. Your options:
@@ -147,6 +149,12 @@ The important thing is that both attention and MLP layers are targeted. Most tra
 
 **Do not train the text encoder** unless you have a compelling reason (introducing vocabulary that doesn't exist in Qwen3's training data, which is rare).
 
+### Other LoRA variants
+
+**LOKR:** Herbst briefly tested LOKR on Klein 9B but did not find it beneficial. Stick with standard LoRA unless you have a specific reason to experiment.
+
+**EMA (Exponential Moving Average):** Herbst tested EMA on Klein 9B and found it produced worse results than standard training. Not recommended.
+
 ## 6. Learning rate and optimizer
 
 ### Learning rate
@@ -180,7 +188,7 @@ In practice, most Klein training runs use batch size 1 (VRAM-constrained), so th
 
 This is the sleeper parameter that most guides either ignore or leave at the default.
 
-Interestingly, the spacepxl repo found weight decay had **zero measurable effect** on SD 1.5 validation loss across the range 0 to 0.1 — it simply didn't matter for short fine-tuning runs on UNet architectures. On Klein, the story is completely different: Herbst's research (50+ isolated-variable runs across FLUX.2 dev and Klein) found that **weight decay had a larger impact on output quality than learning rate.** His optimal value: **0.00001** — one-tenth the typical default of 0.0001.
+Interestingly, the spacepxl repo found weight decay had **zero measurable effect** on SD 1.5 validation loss across the range 0 to 0.1 — it simply didn't matter for short fine-tuning runs on UNet architectures. On Klein, the story is completely different: Herbst's research (50+ isolated-variable runs across FLUX.2 dev and Klein 9B) found that **weight decay had a larger impact on output quality than learning rate.** His optimal value: **0.00001** — one-tenth the typical default of 0.0001.
 
 Why the divergence? Herbst's evaluation was primarily visual/aesthetic (grain texture, highlight bloom, shadow detail) rather than loss-curve-based. It's likely that weight decay affects perceptual quality on flow-matching transformers in ways that don't surface as clearly in aggregate loss metrics. Regardless, the visual differences in his tests are striking.
 
@@ -190,7 +198,9 @@ Weight decay acts as a regularizer on parameter magnitudes. On these flow-matchi
 - **Sweet spot** (0.00001): Clean tonal separation, accurate color reproduction, natural contrast.
 - **Too high** (0.0001+): Aggressive parameter suppression causes contrast spikes, crushed shadows, and at 0.001 the images get visibly degraded.
 
-**Set weight decay to 0.00001 and leave it there.** This was consistent across both Klein 4B and 9B, and across dev. If your training tool defaults to a higher value, override it.
+**Set weight decay to 0.00001 and leave it there.** This was consistent across Herbst's tests on FLUX.2 dev and Klein 9B (he did not separately test 4B, but the same principle should apply). If your training tool defaults to a higher value, override it.
+
+Herbst also visualized the decay effect using RGB waveform analysis in DaVinci Resolve, measuring how the black point, white point, and channel separation changed across decay values. Higher decay crushed the waveform into a narrow band (high contrast, clipped shadows); lower decay spread it wider (lifted blacks, softer tonality). This is one of the few training parameters where the effect is directly measurable in the output pixels.
 
 ## 8. Network dimensions: linear_dim and linear_alpha
 
@@ -218,7 +228,7 @@ The spacepxl repo definitively proved that **"less is more" is false.** Every da
 Practical minimums and targets:
 
 - **Single subject (face/character):** 15–30 images minimum. 50+ is better. Variety of angles, lighting, expressions.
-- **Style LoRA:** 50–200 images. Styles need more examples to generalize because "style" is a broader concept than "this specific face."
+- **Style LoRA:** 40–200 images. Styles need more examples to generalize because "style" is a broader concept than "this specific face." (Herbst's HerbstPhoto style LoRA used 41 images and produced strong results, though more images would likely improve generalization further.)
 - **Object/concept:** 20–40 images showing the object in varied contexts.
 
 **Absolute minimum:** 8–10 images. Below this you're memorizing, not learning.
@@ -235,6 +245,8 @@ The tag-style caption "works" in the sense that the model will train, but you're
 
 For subject LoRAs, use a **trigger word** consistently: "a photo of [triggername], a woman with short red hair..." This gives you a reliable activation token at inference.
 
+**Caption dropout:** Some training tools support randomly dropping captions during training (replacing them with empty strings). This can improve the LoRA's ability to activate without the trigger word and may improve style transfer. Herbst tested caption dropout rates around 0.1–0.2 on Klein 9B. If your tool supports it and you're not caching text embeddings, consider `caption_dropout_rate: 0.1` as a starting point. Note that caption dropout is incompatible with text encoder caching (since cached embeddings can't be dynamically emptied).
+
 ### Captioning tools
 
 - **Florence-2** — Fast, decent quality, works locally. The spacepxl repo included `caption_florence.py` for this.
@@ -244,7 +256,7 @@ For subject LoRAs, use a **trigger word** consistently: "a photo of [triggername
 
 ### Image preparation
 
-- **Resolution:** Target 1024×1024. Klein handles aspect ratios well (bucket training), but all dimensions must be divisible by 16.
+- **Resolution:** Klein handles aspect ratios well via bucket training, and all dimensions must be divisible by 16. Training at your images' native resolution is fine — Herbst trained at 1920×1080 and evaluated at 1024×1024 to test resolution generalization. If VRAM is tight, 1024×1024 is a reasonable target.
 - **Quality:** Higher resolution source images are better. Upscale only as a last resort — upscaler artifacts become training artifacts.
 - **Variety:** The spacepxl repo showed that random cropping improves results by simulating a larger dataset. If your training tool supports it, enable it.
 - **No duplicates or near-duplicates.** They bias the training distribution and accelerate overfitting.
@@ -266,7 +278,9 @@ These are starting points, not gospel. Your validation loss curve is the actual 
 | 50–120 images | 3,000–6,000 |
 | 200+ images | 5,000–10,000+ |
 
-Save checkpoints every 200–500 steps. Compare validation loss across checkpoints. The optimal checkpoint is often earlier than you'd expect — the spacepxl repo found the "usable range" on a 22-image SD dataset was steps 2,000–6,000 with the minimum around 2,000. Klein's smaller model capacity means the overfitting inflection may come even sooner.
+Save checkpoints every 200–500 steps (Herbst saved every 1,000 for his initial sweeps, then narrowed to 250-step intervals around the optimum). Compare validation loss across checkpoints. The optimal checkpoint is often earlier than you'd expect — the spacepxl repo found the "usable range" on a 22-image SD dataset was steps 2,000–6,000 with the minimum around 2,000.
+
+However, for style LoRAs the optimal step count can be significantly higher. Herbst found 7,000 steps optimal for a 41-image style dataset on Klein 9B — well above what the table above would suggest for that dataset size. Style requires more steps because the model needs to learn subtle texture patterns (grain, halation, tonal response) that take longer to converge than subject identity. When in doubt, train longer and save more checkpoints.
 
 ### Repeats
 
@@ -289,6 +303,12 @@ For high-likeness character training (where you specifically want the model to m
 - Generated images have the right idea but wrong details
 - Mixing with other prompts overpowers the LoRA easily
 
+### Advanced: high-noise / low-noise split training
+
+An experimental technique Herbst explored: training two separate LoRAs from the same dataset — one with `timestep_bias: high_noise` (learns composition, structure, broad tonal relationships) and one with `timestep_bias: low_noise` (learns fine texture, grain, detail). At inference, the high-noise LoRA is applied during early sampling steps and the low-noise LoRA during late steps, similar to how Wan 2.2's dual-model architecture works.
+
+This is uncharted territory — Herbst described it as a theoretical experiment. If you try it, save aggressive checkpoints and expect to iterate on the step-switching point.
+
 ## 11. VRAM management
 
 ### Budget by GPU
@@ -298,7 +318,8 @@ For high-likeness character training (where you specifically want the model to m
 | RTX 3090 (24GB) | ✅ Comfortable | ⚠️ Tight | Cache everything, rank ≤32 |
 | RTX 4090 (24GB) | ✅ Comfortable | ⚠️ Tight | Same VRAM, faster training |
 | RTX 4080 (16GB) | ⚠️ Possible | ❌ | Aggressive optimization required |
-| A100 40GB | ✅ Easy | ✅ Comfortable | |
+| L40S / A6000 (48GB) | ✅ Easy | ✅ Comfortable | Herbst's GPU of choice for 9B |
+| A100 40GB | ✅ Easy | ⚠️ Tight | 9B may need caching + grad ckpt |
 | H100 80GB | ✅ Trivial | ✅ Easy | Can increase batch size |
 
 ### Optimization techniques, ranked by impact
@@ -315,7 +336,7 @@ Same idea for the VAE. Encode images once, cache, unload. Combined with text enc
 Recomputes intermediate activations during backward pass instead of storing them. Always enable this on 24GB GPUs. On 40GB+ you can leave it off for speed.
 
 **4. Mixed precision (BF16)**
-Klein was trained in BF16. Always use BF16 for training. FP16 can cause numerical issues with the flow matching loss. FP32 wastes VRAM for no benefit. If your GPU doesn't support BF16 natively (pre-Ampere), you can use FP16 but expect occasional instability.
+Klein was trained in BF16. Always use BF16 for training. FP16 can cause numerical issues with the flow matching loss. **FP32 is actively worse, not just wasteful** — Herbst tested FP32 training on Klein 9B and found it "cooked the images too much," producing over-saturated, overly contrasty outputs compared to BF16 (though he noted FP32 was beneficial on other architectures like Wan 2.2, so this is Klein-specific). If your GPU doesn't support BF16 natively (pre-Ampere), you can use FP16 but expect occasional instability.
 
 **5. Quantized base model (FP8 or NF4)**
 Keep the frozen base model in FP8 or NF4 while training LoRA adapters in BF16. This further reduces VRAM but can subtly affect gradient quality. Use FP8 if available (requires compute capability ≥ 8.9, i.e., RTX 4090 / H100). Use NF4 (via bitsandbytes) on older GPUs. This is a last resort — prefer caching-based savings first.
