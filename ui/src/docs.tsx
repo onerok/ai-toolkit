@@ -244,45 +244,6 @@ const docs: { [key: string]: ConfigDoc } = {
       </>
     ),
   },
-  'model.use_offload_conductor': {
-    title: (
-      <>
-        Use Offload Conductor{' '}
-        <span className="text-yellow-500">
-          ( <IoFlaskSharp className="inline text-yellow-500" name="Experimental" /> Experimental)
-        </span>
-      </>
-    ),
-    description: (
-      <>
-        Enables the coordinated layer offload conductor for supported models. The conductor can reduce transfer thrash
-        and lets you choose a memory vs throughput tradeoff with presets.
-        <br />
-        <br />
-        Recommended presets:
-        <br />
-        - Speed: 25% transformer offload
-        <br />- Balanced: 50% transformer offload
-        <br />- Memory: 75% transformer offload
-      </>
-    ),
-  },
-  'model.offload_preset': {
-    title: 'Offload Preset',
-    description: (
-      <>
-        Selects a preset for <code>layer_offloading_transformer_percent</code> when offload conductor is enabled.
-        <br />
-        <br />
-        Presets map to:
-        <br />
-        - Speed: 0.25
-        <br />- Balanced: 0.50
-        <br />- Memory: 0.75
-        <br />- Custom: keep the current slider value.
-      </>
-    ),
-  },
   'model.qie.match_target_res': {
     title: 'Match Target Res',
     description: (

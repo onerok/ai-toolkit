@@ -20,21 +20,6 @@ import { FlipHorizontal2, FlipVertical2 } from 'lucide-react';
 import { handleModelArchChange } from './utils';
 import { IoFlaskSharp } from 'react-icons/io5';
 
-type OffloadConductorPreset = 'speed' | 'balanced' | 'memory' | 'custom';
-
-const OFFLOAD_CONDUCTOR_PRESET_FRACTIONS: Record<Exclude<OffloadConductorPreset, 'custom'>, number> = {
-  speed: 0.25,
-  balanced: 0.5,
-  memory: 0.75,
-};
-
-const OFFLOAD_CONDUCTOR_PRESET_OPTIONS: SelectOption[] = [
-  { value: 'speed', label: 'Speed (25%)' },
-  { value: 'balanced', label: 'Balanced (50%)' },
-  { value: 'memory', label: 'Memory (75%)' },
-  { value: 'custom', label: 'Custom' },
-];
-
 type Props = {
   jobConfig: JobConfig;
   setJobConfig: (value: any, key: string) => void;
@@ -184,14 +169,6 @@ export default function SimpleJob({
     return newQuantizationOptions;
   }, [modelArch]);
 
-  const offloadConductorPreset = useMemo<OffloadConductorPreset>(() => {
-    const fraction = Number(jobConfig.config.process[0].model.layer_offloading_transformer_percent ?? 0.5);
-    if (Math.abs(fraction - OFFLOAD_CONDUCTOR_PRESET_FRACTIONS.speed) < 1e-6) return 'speed';
-    if (Math.abs(fraction - OFFLOAD_CONDUCTOR_PRESET_FRACTIONS.balanced) < 1e-6) return 'balanced';
-    if (Math.abs(fraction - OFFLOAD_CONDUCTOR_PRESET_FRACTIONS.memory) < 1e-6) return 'memory';
-    return 'custom';
-  }, [jobConfig.config.process[0].model.layer_offloading_transformer_percent]);
-
   return (
     <>
       <form onSubmit={handleSubmit} className="space-y-8">
@@ -296,35 +273,6 @@ export default function SimpleJob({
                   onChange={value => setJobConfig(value, 'config.process[0].model.layer_offloading')}
                   docKey="model.layer_offloading"
                 />
-                <Checkbox
-                  label={
-                    <>
-                      Use Offload Conductor <IoFlaskSharp className="inline text-yellow-500" name="Experimental" />{' '}
-                    </>
-                  }
-                  checked={jobConfig.config.process[0].model.use_offload_conductor || false}
-                  onChange={value => setJobConfig(value, 'config.process[0].model.use_offload_conductor')}
-                  docKey="model.use_offload_conductor"
-                />
-                {jobConfig.config.process[0].model.use_offload_conductor && (
-                  <div className="pt-2">
-                    <SelectInput
-                      label="Offload Preset"
-                      value={offloadConductorPreset}
-                      options={OFFLOAD_CONDUCTOR_PRESET_OPTIONS}
-                      onChange={value => {
-                        const preset = value as OffloadConductorPreset;
-                        if (preset !== 'custom') {
-                          setJobConfig(
-                            OFFLOAD_CONDUCTOR_PRESET_FRACTIONS[preset],
-                            'config.process[0].model.layer_offloading_transformer_percent',
-                          );
-                        }
-                      }}
-                      docKey="model.offload_preset"
-                    />
-                  </div>
-                )}
                 {jobConfig.config.process[0].model.layer_offloading && (
                   <div className="pt-2">
                     <SliderInput
