@@ -1,6 +1,6 @@
 # Demystifying FLUX.2 Klein Fine-Tuning
 
-A practical, experiment-informed guide to LoRA training on FLUX.2 Klein. Inspired by [spacepxl/demystifying-sd-finetuning](https://github.com/spacepxl/demystifying-sd-finetuning) — same philosophy, new architecture.
+A practical, experiment-informed guide to LoRA training on FLUX.2 Klein. Inspired by [spacepxl/demystifying-sd-finetuning](https://github.com/spacepxl/demystifying-sd-finetuning) — same philosophy, new architecture. Klein-specific findings draw heavily from [Calvin Herbst's](https://www.youtube.com/@CalvinHerbst) 50+ isolated-variable training experiments across FLUX.2 dev and Klein.
 
 The original repo proved that most fine-tuning advice is vibes-based and wrong, and that you can cut through it with deterministic validation loss and controlled experiments. Everything here follows that principle: measure don't guess, change one variable at a time, and stop training when the loss curve tells you to.
 
@@ -15,7 +15,7 @@ The original repo proved that most fine-tuning advice is vibes-based and wrong, 
 5. [LoRA configuration](#5-lora-configuration)
 6. [Learning rate and optimizer](#6-learning-rate-and-optimizer)
 7. [Weight decay: the parameter nobody talks about](#7-weight-decay-the-parameter-nobody-talks-about)
-8. [Network dimensions: the 4:2:2:1 ratio](#8-network-dimensions-the-4221-ratio)
+8. [Network dimensions: linear_dim and linear_alpha](#8-network-dimensions-linear_dim-and-linear_alpha)
 9. [Dataset preparation](#9-dataset-preparation)
 10. [Training steps and when to stop](#10-training-steps-and-when-to-stop)
 11. [VRAM management](#11-vram-management)
@@ -60,17 +60,20 @@ If you're coming from SD 1.5 / SDXL, basically everything is different under the
 SD used a UNet (convolutional encoder-decoder with skip connections). Klein uses a Diffusion Transformer — a sequence of transformer blocks operating on patched latent tokens. This means:
 
 - **No convolution layers to target.** The spacepxl repo showed that adding resnet convolutions to SD LoRA targets doubled parameters with no quality improvement. On Klein there are no convolutions to add — it's attention and MLP all the way down. This is good; the architecture naturally matches the optimal LoRA target strategy.
-- **Attention + MLP are your LoRA targets.** Specifically: `to_q`, `to_k`, `to_v`, `to_out` for attention, plus the feedforward/MLP projection layers. This is what the original repo recommended for SD after extensive testing, and it's the only option here.
+- **Attention + MLP are your LoRA targets.** The transformer blocks contain attention projections and MLP/feedforward layers — these are the modules that get LoRA adapters. This is what the original repo recommended for SD after extensive testing, and it's the only option here. Note that the exact layer names vary by framework (e.g., AI Toolkit uses `qkv`/`proj` internally, diffusers uses `to_q`/`to_k`/`to_v`/`to_out`); most training tools handle targeting automatically.
 
-### CLIP → Qwen3-4B
+### CLIP → Qwen3 LLM
 
-SD used CLIP ViT-L/14 (~400M params, ~500K concept vocabulary). Klein uses **Qwen3-4B**, a 4-billion-parameter LLM.
+SD used CLIP ViT-L/14 (~400M params, ~500K concept vocabulary). Klein replaces CLIP with a Qwen3 LLM as its text encoder — the size scales with the model variant:
+
+- **Klein 4B** uses **Qwen3-4B** (~8GB in BF16)
+- **Klein 9B** uses **Qwen3-8B** (~16GB in BF16)
 
 Practical implications:
 
 - **Captioning strategy shifts from tags to natural language.** CLIP was trained on short tag-like descriptions. Qwen3 understands full sentences and paragraphs. Write captions like you're describing the image to someone, 40–100 words. Danbooru-style tag dumps still work but leave quality on the table.
 - **Text encoder training is even less necessary.** The spacepxl repo showed text encoder fine-tuning was unnecessary for SD because CLIP already knew ~500K concepts. Qwen3 knows orders of magnitude more. You'd need to be training a truly alien concept to justify touching it. Keep it frozen.
-- **The text encoder is a significant VRAM cost.** Qwen3-4B is the same size as the diffusion model itself. Cache your text embeddings (encode all captions once, save to disk, free the encoder from VRAM). This is the single biggest VRAM optimization available.
+- **The text encoder is a significant VRAM cost.** On the 4B variant, Qwen3-4B is roughly the same size as the diffusion model itself. On the 9B variant, Qwen3-8B is nearly as large. Cache your text embeddings (encode all captions once, save to disk, free the encoder from VRAM). This is the single biggest VRAM optimization available.
 
 ### SD VAE → FLUX VAE (32 channels)
 
@@ -121,26 +124,26 @@ Don't go above 64 unless you have a specific reason and are monitoring validatio
 
 ### Alpha
 
-The spacepxl repo made a strong case for **alpha = 1 always**, because it decouples rank from effective learning rate. The Klein community largely uses **alpha = rank/2** (half of rank). Both approaches work. What matters is that you understand the relationship:
+The spacepxl repo made a strong case for **alpha = 1 always**, because it decouples rank from effective learning rate — you can change rank without needing to retune LR. This remains the cleanest approach.
+
+The Klein community (including Herbst's configs) commonly uses **alpha = rank/2**, which is the default in many training tools. This works fine but means your effective learning rate changes whenever you change rank, which makes it harder to isolate variables.
+
+The relationship:
 
 - Effective LoRA learning rate scales as `alpha / rank × base_lr`
 - With alpha=1, rank=32, LR=1e-4: effective LR = 3.125e-6
 - With alpha=16, rank=32, LR=1e-4: effective LR = 5e-5
 
-If you use alpha=1, you'll likely need to increase your base LR to compensate. If you use alpha=rank/2, standard LR recommendations apply directly.
-
-**Pick one convention and stick with it.** The worst outcome is switching between conventions and losing track of your effective LR.
+**Recommendation: use alpha = 1 if you're experimenting with different ranks** (so LR stays constant). Use alpha = rank/2 if you've settled on a rank and want the standard LR recommendations (like 1e-4) to apply directly. Don't switch between conventions mid-experiment.
 
 ### Target modules
 
-Target attention projections and MLP/feedforward layers. On Klein this means:
+Target attention projections and MLP/feedforward layers. The exact layer names differ between frameworks:
 
-```
-to_q, to_k, to_v, to_out.0  (attention)
-ff.net.0.proj, ff.net.2      (feedforward, naming varies by tool)
-```
+- **AI Toolkit**: Targets all `nn.Linear` modules within the `Flux2` transformer class automatically (internally: `qkv`, `proj` for attention; `linear1`/`linear2`, `img_mlp`/`txt_mlp` for MLP). You don't need to specify individual layer names — just select the Klein model and LoRA is applied to the right modules.
+- **Diffusers / Kohya**: May use different naming conventions like `to_q`, `to_k`, `to_v`, `to_out`, `ff.net.*`. Check your tool's documentation or inspect the model's `state_dict` keys.
 
-The exact layer names depend on your training tool's implementation. AI Toolkit and Kohya handle this automatically when you select "standard" LoRA targets. If configuring manually, inspect the model's `state_dict` keys to confirm naming.
+The important thing is that both attention and MLP layers are targeted. Most training tools handle this automatically when you select standard LoRA targets for Klein.
 
 **Do not train the text encoder** unless you have a compelling reason (introducing vocabulary that doesn't exist in Qwen3's training data, which is rare).
 
@@ -150,7 +153,7 @@ The exact layer names depend on your training tool's implementation. AI Toolkit 
 
 **Start at 1e-4.** This is the convergent recommendation from HuggingFace's official training script, Ostris AI Toolkit defaults, and Calvin Herbst's 50+ isolated-variable experiments.
 
-Klein is significantly more LR-sensitive than SD 1.5. The spacepxl repo demonstrated that on SD, learning rate mainly affected convergence speed — all tested rates reached the same minimum loss, just at different speeds. On transformer architectures, this is not true. Herbst describes changes of "five thousandths of a percent" destroying image quality. This is consistent with broader findings that larger transformers have narrower optimal LR ranges.
+Klein is significantly more LR-sensitive than SD 1.5. The spacepxl repo demonstrated that on SD, learning rate mainly affected convergence speed — all tested rates reached the same minimum loss, just at different speeds. On Klein, this is not true. Herbst found that changing the default LR of 0.0001 by as little as five one-thousandths of a percent (i.e., ~5e-6) "totally ripped apart the image." Note that the spacepxl experiments measured LR sensitivity via validation loss curves, while Herbst evaluated primarily via visual/aesthetic quality — it's possible that visual degradation precedes measurable loss divergence, making Klein appear more sensitive depending on how you measure.
 
 **If training looks unstable** (loss spikes, artifacts in validation images): reduce to 5e-5.
 **If convergence is very slow** (thousands of steps with minimal validation loss change): increase to 2e-4, but monitor closely.
@@ -177,9 +180,11 @@ In practice, most Klein training runs use batch size 1 (VRAM-constrained), so th
 
 This is the sleeper parameter that most guides either ignore or leave at the default.
 
-Calvin Herbst's research (50+ isolated-variable runs across Flux 2 dev and Klein) found that **weight decay had a larger impact on output quality than learning rate.** His optimal value: **0.00001** — one-tenth the typical default of 0.0001.
+Interestingly, the spacepxl repo found weight decay had **zero measurable effect** on SD 1.5 validation loss across the range 0 to 0.1 — it simply didn't matter for short fine-tuning runs on UNet architectures. On Klein, the story is completely different: Herbst's research (50+ isolated-variable runs across FLUX.2 dev and Klein) found that **weight decay had a larger impact on output quality than learning rate.** His optimal value: **0.00001** — one-tenth the typical default of 0.0001.
 
-The effect is visual and measurable. Weight decay acts as a regularizer on parameter magnitudes. On these flow-matching transformers, it manifests as changes in tonal response:
+Why the divergence? Herbst's evaluation was primarily visual/aesthetic (grain texture, highlight bloom, shadow detail) rather than loss-curve-based. It's likely that weight decay affects perceptual quality on flow-matching transformers in ways that don't surface as clearly in aggregate loss metrics. Regardless, the visual differences in his tests are striking.
+
+Weight decay acts as a regularizer on parameter magnitudes. On these flow-matching transformers, it manifests as changes in tonal response:
 
 - **Too low** (0 or near-0): Parameters grow unchecked, causing subtle color channel bleed and lifted blacks. Can look "analog" in a pleasant way but isn't controllable.
 - **Sweet spot** (0.00001): Clean tonal separation, accurate color reproduction, natural contrast.
@@ -187,24 +192,22 @@ The effect is visual and measurable. Weight decay acts as a regularizer on param
 
 **Set weight decay to 0.00001 and leave it there.** This was consistent across both Klein 4B and 9B, and across dev. If your training tool defaults to a higher value, override it.
 
-## 8. Network dimensions: the 4:2:2:1 ratio
+## 8. Network dimensions: linear_dim and linear_alpha
 
 Most people train LoRAs with flat dimensions — rank 32 for everything. Herbst's research revealed this is significantly suboptimal.
 
-The winning configuration across all tested Flux models: a **4:2:2:1 dimensional ratio.**
+The winning configuration across his ~64 tested combinations: **linear_dim = 128, linear_alpha = 64.**
 
 ```
-linear_dim    = 128   (4x base)
-linear_alpha  = 64    (2x base)
-conv_dim      = 64    (2x base)
-conv_alpha    = 32    (1x base)
+linear_dim    = 128   (rank for nn.Linear layers)
+linear_alpha  = 64    (alpha for nn.Linear layers)
 ```
 
-This ratio outperformed all other ~64 combinations tested. The flat default of 32/32/32/32 was measurably worse. The extreme of 256/256/256/256 destroyed images entirely.
+The flat default of 32/32 was measurably worse. Going higher to 256/256 destroyed images entirely. The sweet spot is a higher rank with alpha at half the rank.
 
-**Why does this work?** The intuition is that different layer types in the transformer benefit from different adaptation capacities. Linear (attention) layers handle the bulk of semantic and structural learning and benefit from higher rank. The MLP/projection layers need less adaptation capacity. The ratio gives each layer type the capacity it actually needs instead of one-size-fits-all.
+**A note on conv_dim / conv_alpha:** Many training tools (including AI Toolkit and Kohya) expose four network dimension fields: `linear_dim`, `linear_alpha`, `conv_dim`, and `conv_alpha`. These exist because SD 1.5 / SDXL used UNet architectures with convolution layers. Herbst's configs included `conv_dim = 64` and `conv_alpha = 32` — however, Klein is a pure DiT with **no convolution layers** (as noted in Section 3). The conv settings create zero LoRA modules on Klein; they are silently ignored. The "4:2:2:1 ratio" (128/64/64/32) that Herbst reports is effectively just **2 active values**: `linear_dim = 128` and `linear_alpha = 64`. The conv values are vestigial from UNet-era configs.
 
-Note: Not all training tools expose separate dimension controls for different layer types. AI Toolkit and SimpleTuner do. If your tool only offers a single rank setting, use 32 and accept the suboptimality — it still works, just not as well.
+If your tool only offers a single rank setting, use 32 (or 128 if your VRAM allows) and accept the suboptimality — it still works, just not as well.
 
 ## 9. Dataset preparation
 
@@ -222,7 +225,7 @@ Practical minimums and targets:
 
 ### Captioning
 
-Write natural language descriptions. Qwen3-4B is an LLM — it processes language like GPT, not like CLIP. Good captions are specific, descriptive, and 40–100 words.
+Write natural language descriptions. Klein's Qwen3 text encoder is an LLM — it processes language like GPT, not like CLIP. Good captions are specific, descriptive, and 40–100 words.
 
 **Good caption:** "A woman with short red hair and green eyes, wearing a blue denim jacket, standing in a sunlit garden with white roses in the background. She is smiling and looking slightly to the left. Soft natural lighting, shallow depth of field."
 
@@ -300,7 +303,7 @@ For high-likeness character training (where you specifically want the model to m
 
 ### Optimization techniques, ranked by impact
 
-**1. Cache text embeddings** (saves ~8GB for 4B, ~16GB for 9B)
+**1. Cache text embeddings** (saves ~8GB for 4B with Qwen3-4B, ~16GB for 9B with Qwen3-8B)
 Encode all captions once with the Qwen3 text encoder, save embeddings to disk, unload the encoder entirely. This is the single biggest win. Most training tools support this natively (SimpleTuner: `--cache_text_encoder_outputs`, AI Toolkit: `cache_text_encoder_outputs: true`).
 
 Downside: You can't do dynamic caption augmentation (randomly dropping/modifying words during training). For most use cases this doesn't matter.
@@ -331,7 +334,7 @@ Klein Base and Klein (distilled) use completely different inference settings. If
 | CFG scale | **4.0** (range: 3.0–5.0) |
 | Sampler | Euler / DPM++ 2M |
 | Scheduler | Normal / Karras |
-| LoRA strength | **0.6–0.8** (start at 0.73) |
+| LoRA strength | **0.6–0.8** (start at 0.7) |
 
 ### Klein distilled inference settings (for reference — don't train on this)
 
@@ -344,7 +347,7 @@ If you evaluate your Base-trained LoRA at 4 steps with CFG 1.0, the output will 
 
 ### LoRA strength at inference
 
-Start at **0.73** and adjust. This value came from Herbst's testing as a consistently strong default. At 1.0, LoRAs on Klein tend to overpower the base model — you'll see style collapse and reduced prompt adherence. Below 0.4, the LoRA barely activates.
+Start at **0.7–0.8** and adjust. Herbst found 0.73 optimal for his specific style LoRA (filmic grain, tested with `dpmpp_2s_a + sgm_uni` sampler), which is a reasonable starting point but not universal — your optimal strength will depend on your LoRA's subject matter, training duration, and sampler choice. At 1.0, LoRAs on Klein tend to overpower the base model — you'll see style collapse and reduced prompt adherence. Below 0.4, the LoRA barely activates.
 
 If you're getting overpowered results even at low strength, your LoRA is overtrained. Go back to your validation loss curve and use an earlier checkpoint.
 
@@ -365,7 +368,7 @@ precision: bf16
 # LoRA
 rank: 16
 alpha: 8  # or alpha: 1 with lr: 4e-4
-target_modules: [to_q, to_k, to_v, to_out, ff]
+# target_modules handled automatically by training tool
 
 # Training
 optimizer: adamw8bit
@@ -396,14 +399,13 @@ save_every_n_steps: 500
 images: 80-200 style reference images
 captions: Detailed natural language descriptions of content AND style
 
-# LoRA  
+# LoRA
 rank: 32
 alpha: 16
 # If tool supports separate dims:
 linear_dim: 128
 linear_alpha: 64
-conv_dim: 64
-conv_alpha: 32
+# conv_dim/conv_alpha not needed — Klein has no conv layers
 
 # Training
 optimizer: adamw8bit
@@ -469,7 +471,7 @@ Correct. They are completely incompatible — different architecture, different 
 
 ### "My Klein 4B LoRA doesn't work on FLUX.2 dev"
 
-Also correct. Klein uses Qwen3 text encoders; dev uses Mistral-3 24B. They're different model families despite sharing the Flux name. LoRAs don't transfer between them.
+Also correct. Klein uses Qwen3 text encoders (Qwen3-4B for Klein 4B, Qwen3-8B for Klein 9B); dev uses Mistral Small 3.1 24B. They're different model families despite sharing the Flux name. LoRAs don't transfer between them.
 
 ## 15. Tools and environment
 
@@ -477,7 +479,7 @@ Also correct. Klein uses Qwen3 text encoders; dev uses Mistral-3 24B. They're di
 
 **Ostris AI Toolkit** — Best out-of-box experience for Klein. Explicit Klein Base model selection in config. Supports all parameters discussed here. Actively maintained.
 
-**HuggingFace Diffusers** — Official `Flux2KleinPipeline` and training scripts. Most control, least convenience. Good if you want to modify training loops.
+**HuggingFace Diffusers** — Official FLUX.2 pipeline support and training scripts. Check diffusers documentation for the current pipeline class name. Most control, least convenience. Good if you want to modify training loops.
 
 **SimpleTuner** — Full-featured, supports validation image generation, separate dimension configs, aggressive VRAM optimization. Good for the spacepxl-style deterministic validation workflow.
 
@@ -491,7 +493,7 @@ Also correct. Klein uses Qwen3 text encoders; dev uses Mistral-3 24B. They're di
 
 **ComfyUI** — Full Klein support for all variants. The standard for local evaluation. Make sure you're using Klein-specific workflow nodes, not Flux.1 nodes.
 
-**HuggingFace Diffusers** — Programmatic inference via `Flux2KleinPipeline`. Good for scripted batch evaluation of checkpoints.
+**HuggingFace Diffusers** — Programmatic inference via the FLUX.2 pipeline. Good for scripted batch evaluation of checkpoints.
 
 ---
 
@@ -500,10 +502,10 @@ Also correct. Klein uses Qwen3 text encoders; dev uses Mistral-3 24B. They're di
 1. **Train on Klein 4B Base** (not distilled, not 9B unless you need it)
 2. **AdamW8bit, LR 1e-4, weight decay 0.00001**
 3. **LoRA rank 16–32, alpha = rank/2, target attention + MLP**
-4. **Network dims 128/64/64/32** if your tool supports it
+4. **Network dims linear_dim=128, linear_alpha=64** if your tool supports it (conv settings are no-ops on Klein)
 5. **Cache text embeddings and latents** to fit in 24GB
 6. **15–30 images minimum**, natural language captions
 7. **Deterministic validation loss** — split your data, measure periodically, stop at the minimum
-8. **Evaluate at 50 steps, CFG 4.0, LoRA strength 0.73** — not distilled settings
+8. **Evaluate at 50 steps, CFG 4.0, LoRA strength 0.7–0.8** — not distilled settings
 9. **Weight decay matters more than learning rate** — get it right (0.00001)
 10. **When in doubt, check the validation loss curve.** Everything else is vibes.
