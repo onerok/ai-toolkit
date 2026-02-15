@@ -333,8 +333,8 @@ class Flux2Model(BaseModel):
             img_cond_seq_ids: torch.Tensor | None = None
 
             # handle control images
-            batch_control_tensor_list = batch.control_tensor_list
-            if batch_control_tensor_list is None and batch.control_tensor is not None:
+            batch_control_tensor_list = batch.control_tensor_list if batch is not None else None
+            if batch_control_tensor_list is None and batch is not None and batch.control_tensor is not None:
                 batch_control_tensor_list = []
                 for b in range(latent_model_input.shape[0]):
                     batch_control_tensor_list.append(batch.control_tensor[b : b + 1])

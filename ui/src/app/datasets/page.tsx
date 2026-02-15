@@ -21,8 +21,8 @@ export default function Datasets() {
 
   // Transform datasets array into rows with objects
   const tableRows = datasets.map(dataset => ({
-    name: dataset,
-    actions: dataset, // Pass full dataset name for actions
+    name: dataset.name,
+    actions: dataset.name, // Pass full dataset name for actions
   }));
 
   const columns: TableColumn[] = [
