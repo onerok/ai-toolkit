@@ -140,6 +140,60 @@ set AI_TOOLKIT_AUTH=super_secure_password && npm run build_and_start
 $env:AI_TOOLKIT_AUTH="super_secure_password"; npm run build_and_start
 ```
 
+## UI Extension
+
+An extended version of the AI Toolkit UI with additional features is available at [malcolmrey/ai-toolkit-ui-extension](https://huggingface.co/malcolmrey/ai-toolkit-ui-extension). This extension adds batch queue management, templates, and other enhancements to the base UI.
+
+
+## FLUX.1 Training
+
+### Tutorial
+
+To get started quickly, check out [@araminta_k](https://x.com/araminta_k) tutorial on [Finetuning Flux Dev on a 3090](https://www.youtube.com/watch?v=HzGW_Kyermg) with 24GB VRAM.
+
+
+### Requirements
+You currently need a GPU with **at least 24GB of VRAM** to train FLUX.1. If you are using it as your GPU to control 
+your monitors, you probably need to set the flag `low_vram: true` in the config file under `model:`. This will quantize
+the model on CPU and should allow it to train with monitors attached. Users have gotten it to work on Windows with WSL,
+but there are some reports of a bug when running on windows natively. 
+I have only tested on linux for now. This is still extremely experimental
+and a lot of quantizing and tricks had to happen to get it to fit on 24GB at all. 
+
+### FLUX.1-dev
+
+FLUX.1-dev has a non-commercial license. Which means anything you train will inherit the
+non-commercial license. It is also a gated model, so you need to accept the license on HF before using it.
+Otherwise, this will fail. Here are the required steps to setup a license.
+
+1. Sign into HF and accept the model access here [black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev)
+2. Make a file named `.env` in the root on this folder
+3. [Get a READ key from huggingface](https://huggingface.co/settings/tokens/new?) and add it to the `.env` file like so `HF_TOKEN=your_key_here`
+
+### FLUX.1-schnell
+
+FLUX.1-schnell is Apache 2.0. Anything trained on it can be licensed however you want and it does not require a HF_TOKEN to train.
+However, it does require a special adapter to train with it, [ostris/FLUX.1-schnell-training-adapter](https://huggingface.co/ostris/FLUX.1-schnell-training-adapter).
+It is also highly experimental. For best overall quality, training on FLUX.1-dev is recommended.
+
+To use it, You just need to add the assistant to the `model` section of your config file like so:
+
+```yaml
+      model:
+        name_or_path: "black-forest-labs/FLUX.1-schnell"
+        assistant_lora_path: "ostris/FLUX.1-schnell-training-adapter"
+        is_flux: true
+        quantize: true
+```
+
+You also need to adjust your sample steps since schnell does not require as many
+
+```yaml
+      sample:
+        guidance_scale: 1  # schnell does not do guidance
+        sample_steps: 4  # 1 - 4 works well
+```
+
 ### Training
 1. Copy the example config file located at `config/examples/train_lora_flux_24gb.yaml` (`config/examples/train_lora_flux_schnell_24gb.yaml` for schnell) to the `config` folder and rename it to `whatever_you_want.yml`
 2. Edit the file following the comments in the file

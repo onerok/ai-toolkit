@@ -53,8 +53,20 @@ const startAndWatchJob = (job: Job) => {
     fs.writeFileSync(configPath, JSON.stringify(jobConfig, null, 2));
 
     let pythonPath = 'python';
-    // use .venv or venv if it exists
-    if (fs.existsSync(path.join(TOOLKIT_ROOT, '.venv'))) {
+    let useUv = false;
+    // prefer uv if pyproject.toml exists (uv-managed project)
+    if (fs.existsSync(path.join(TOOLKIT_ROOT, 'pyproject.toml'))) {
+      // resolve full path to uv since Node.js may not have ~/.local/bin in PATH
+      const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+      const uvCandidates = [
+        path.join(homeDir, '.local', 'bin', 'uv'),
+        path.join(homeDir, '.cargo', 'bin', 'uv'),
+        '/usr/local/bin/uv',
+        'uv',
+      ];
+      pythonPath = uvCandidates.find(p => p === 'uv' || fs.existsSync(p)) || 'uv';
+      useUv = true;
+    } else if (fs.existsSync(path.join(TOOLKIT_ROOT, '.venv'))) {
       if (isWindows) {
         pythonPath = path.join(TOOLKIT_ROOT, '.venv', 'Scripts', 'python.exe');
       } else {
@@ -95,13 +107,15 @@ const startAndWatchJob = (job: Job) => {
     }
 
     // Add the --log argument to the command
-    const args = [runFilePath, configPath, '--log', logPath];
+    const args = useUv
+      ? ['run', 'python', runFilePath, configPath, '--log', logPath]
+      : [runFilePath, configPath, '--log', logPath];
 
     try {
       let subprocess;
+      const logFd = fs.openSync(logPath, 'a');
 
       if (isWindows) {
-        // Spawn Python directly on Windows so the process can survive parent exit
         subprocess = spawn(pythonPath, args, {
           env: {
             ...process.env,
@@ -110,13 +124,12 @@ const startAndWatchJob = (job: Job) => {
           cwd: TOOLKIT_ROOT,
           detached: true,
           windowsHide: true,
-          stdio: 'ignore', // don't tie stdio to parent
+          stdio: ['ignore', logFd, logFd],
         });
       } else {
-        // For non-Windows platforms, fully detach and ignore stdio so it survives daemon-like
         subprocess = spawn(pythonPath, args, {
           detached: true,
-          stdio: 'ignore',
+          stdio: ['ignore', logFd, logFd],
           env: {
             ...process.env,
             ...additionalEnv,
@@ -138,6 +151,23 @@ const startAndWatchJob = (job: Job) => {
       } catch (e) {
         console.error('Error writing pid file:', e);
       }
+
+      // Listen for process exit to update job status on failure
+      subprocess.on('close', async (code) => {
+        fs.closeSync(logFd);
+        if (code !== 0 && code !== null) {
+          const logContent = fs.existsSync(logPath)
+            ? fs.readFileSync(logPath, 'utf-8').slice(-500)
+            : 'No log output';
+          await prisma.job.update({
+            where: { id: jobID },
+            data: {
+              status: 'error',
+              info: `Process exited with code ${code}: ${logContent}`,
+            },
+          });
+        }
+      });
 
       // Important: let the child run independently of this Node process.
       if (subprocess.unref) {

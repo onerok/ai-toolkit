@@ -19,9 +19,13 @@ export async function POST(request: Request) {
     const imageFiles = findImagesRecursively(datasetFolder);
 
     // Format response
-    const result = imageFiles.map(imgPath => ({
-      img_path: imgPath,
-    }));
+    const result = imageFiles.map(imgPath => {
+      let mtime = 0;
+      try {
+        mtime = fs.statSync(imgPath).mtimeMs;
+      } catch {}
+      return { img_path: imgPath, mtime };
+    });
 
     return NextResponse.json({ images: result });
   } catch (error) {
